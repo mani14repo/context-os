@@ -218,6 +218,17 @@ store = RedisCachedContextStore(primary, redis.from_url("redis://localhost:6379/
 os = ContextOS(store=store)  # graph/tier_manager/access_log still default to `store`
 ```
 
+`Compactor` is intentionally a single, stateless call — `compact(node, level)` in, one
+`ContextRepresentation` out, no memory of prior calls. A custom `Compactor` can run
+something more elaborate internally (an LLM call, a generate/reflect/curate loop like
+[ACE-style "context playbook" agents](https://arxiv.org/abs/2510.04618) use to refine
+strategies over iterations) and still satisfy the protocol. What doesn't fit is the
+*persistent, delta-updated playbook* those patterns rely on: `compact()` has no state
+across calls, so an evolving shared artifact is better modeled as an ordinary
+`ContextNode` that a Generator/Reflector/Curator pipeline updates via `ContextOS.ingest()`
+(each update versioned automatically — see "Immutable history" below) rather than as a
+`Compactor`. Compaction and playbook-curation are related but distinct concerns here.
+
 `ContextOS(artifacts=...)` accepts a seventh, independent collaborator implementing
 `contextos.protocols.ArtifactStore` (`S3ArtifactStore`, needs `pip install -e ".[s3]"`;
 `AzureBlobArtifactStore`, needs `pip install -e ".[azure-blob]"`) for the "graph-content
@@ -262,6 +273,10 @@ Known gaps, tracked as GitHub issues:
 
 - No ingestion pipeline: `ContextOS.ingest()` stores the `ContextNode` you hand it as-is —
   there is no automatic classification or entity extraction.
+- `SimpleCompactor` is deterministic sentence-count truncation with no reflection or
+  iterative refinement — see the `Compactor` note under "Extending ContextOS" for how a
+  more elaborate custom `Compactor` would fit, and why an evolving curated artifact
+  (a "context playbook") is a versioned `ContextNode`, not a `Compactor`, in this design.
 - `InMemoryContextStore`/`SQLiteContextStore` rank by lexical token overlap, not
   embeddings. `PostgresContextStore` ranks by real pgvector cosine distance, but its
   default `HashingEmbeddingProvider` captures shared vocabulary, not meaning — plug in
