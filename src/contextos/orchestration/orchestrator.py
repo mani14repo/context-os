@@ -14,17 +14,24 @@ from contextos.models import (
     RankedContext,
     StorageTier,
 )
-from contextos.protocols import Compactor, ContextStore, GraphStore
+from contextos.protocols import AccessLog, Compactor, ContextStore, GraphStore
 from contextos.text import tokenize
 
 _HOT_WARM = frozenset({StorageTier.HOT, StorageTier.WARM})
 
 
 class ContextOrchestrator:
-    def __init__(self, store: ContextStore, graph: GraphStore, compactor: Compactor | None = None):
+    def __init__(
+        self,
+        store: ContextStore,
+        graph: GraphStore,
+        compactor: Compactor | None = None,
+        access_log: AccessLog | None = None,
+    ):
         self.store = store
         self.graph = graph
         self.compactor = compactor or SimpleCompactor()
+        self.access_log = access_log
 
     async def assemble(self, request: ContextRequest) -> ContextPackage:
         query = ContextQuery(
@@ -50,6 +57,11 @@ class ContextOrchestrator:
         candidates = self._dedupe([*direct, *related])
         ranked = self._rank(candidates, request.task, direct_ids)
         selected, token_count = await self._fit_budget(ranked, request.token_budget)
+        if self.access_log is not None:
+            for item in selected:
+                await self.access_log.record(
+                    request.tenant_id, item.node.id, request.agent, request.task
+                )
         return ContextPackage(
             request=request,
             items=selected,

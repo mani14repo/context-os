@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from contextos.models import ContextNode, ContextQuery
+from contextos.models import ContextNode, ContextQuery, utcnow
 from contextos.text import tokenize
 
 
@@ -21,6 +21,11 @@ def score_node(query: ContextQuery, node: ContextNode) -> float | None:
     if query.node_types and node.node_type not in query.node_types:
         return None
     if node.confidence < query.minimum_confidence:
+        return None
+    as_of = query.as_of or utcnow()
+    if node.valid_from > as_of:
+        return None
+    if node.valid_to is not None and as_of >= node.valid_to:
         return None
     query_terms = tokenize(query.query)
     haystack = " ".join(filter(None, [node.title, node.summary, node.content]))

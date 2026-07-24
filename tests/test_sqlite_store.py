@@ -1,7 +1,9 @@
+from datetime import timedelta
+
 import pytest
 
 from contextos import ContextEdge, ContextNode, ContextOS, ContextRequest, MemoryType, StorageTier
-from contextos.models import ContextQuery
+from contextos.models import ContextQuery, utcnow
 from contextos.storage.sqlite import SQLiteContextStore
 
 
@@ -115,4 +117,51 @@ async def test_sqlite_store_works_as_contextos_backend(tmp_path) -> None:
         )
     )
     assert package.items
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_creates_version_and_history(tmp_path) -> None:
+    store = SQLiteContextStore(tmp_path / "context.db")
+    node = await store.put_node(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, content="v1")
+    )
+    assert node.version == 1
+
+    node.content = "v2"
+    updated = await store.put_node(node)
+    assert updated.version == 2
+
+    history = await store.get_history("t1", node.id)
+    assert len(history) == 1
+    assert history[0].content == "v1"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_node_excluded_from_search(tmp_path) -> None:
+    store = SQLiteContextStore(tmp_path / "context.db")
+    await store.put_node(
+        ContextNode(
+            tenant_id="t1",
+            node_type="fact",
+            memory_type=MemoryType.SEMANTIC,
+            content="Kubernetes upgrade notes",
+            valid_to=utcnow() - timedelta(days=1),
+        )
+    )
+    results = await store.search(ContextQuery(tenant_id="t1", query="Kubernetes"))
+    assert results == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_access_log_records_and_returns_last_accessed(tmp_path) -> None:
+    store = SQLiteContextStore(tmp_path / "context.db")
+    node = await store.put_node(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    assert await store.last_accessed("t1", node.id) is None
+    await store.record("t1", node.id, "test-agent", "test task")
+    assert await store.last_accessed("t1", node.id) is not None
     store.close()

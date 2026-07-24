@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 
 from contextos import (
@@ -5,11 +7,13 @@ from contextos import (
     ContextEdge,
     ContextNode,
     ContextOS,
+    ContextQuery,
     ContextRequest,
     MemoryType,
     StorageTier,
 )
-from contextos.models import ContextRepresentation
+from contextos.models import ContextRepresentation, utcnow
+from contextos.tiering import suggest_tier
 
 
 @pytest.mark.asyncio
@@ -149,3 +153,134 @@ async def test_custom_compactor_is_used_instead_of_default() -> None:
     )
     representation = await os.compact(node, CompressionLevel.COMPACT)
     assert representation.content == "stub"
+
+
+@pytest.mark.asyncio
+async def test_update_creates_version_and_preserves_history() -> None:
+    os = ContextOS()
+    node = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, content="v1")
+    )
+    assert node.version == 1
+
+    node.content = "v2"
+    updated = await os.ingest(node)
+    assert updated.version == 2
+
+    history = await os.history("t1", node.id)
+    assert len(history) == 1
+    assert history[0].content == "v1"
+    assert history[0].version == 1
+
+
+@pytest.mark.asyncio
+async def test_update_cannot_change_tenant_id() -> None:
+    os = ContextOS()
+    node = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    node.tenant_id = "t2"
+    with pytest.raises(ValueError):
+        await os.ingest(node)
+
+
+@pytest.mark.asyncio
+async def test_expired_node_is_excluded_from_search() -> None:
+    os = ContextOS()
+    await os.ingest(
+        ContextNode(
+            tenant_id="t1",
+            node_type="fact",
+            memory_type=MemoryType.SEMANTIC,
+            content="Kubernetes upgrade notes",
+            valid_to=utcnow() - timedelta(days=1),
+        )
+    )
+    results = await os.search(ContextQuery(tenant_id="t1", query="Kubernetes"))
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_not_yet_valid_node_is_excluded_from_search() -> None:
+    os = ContextOS()
+    await os.ingest(
+        ContextNode(
+            tenant_id="t1",
+            node_type="fact",
+            memory_type=MemoryType.SEMANTIC,
+            content="Kubernetes upgrade notes",
+            valid_from=utcnow() + timedelta(days=1),
+        )
+    )
+    results = await os.search(ContextQuery(tenant_id="t1", query="Kubernetes"))
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_assemble_records_access() -> None:
+    os = ContextOS()
+    node = await os.ingest(
+        ContextNode(
+            tenant_id="t1",
+            node_type="fact",
+            memory_type=MemoryType.SEMANTIC,
+            title="Release convention",
+            content="Stable releases use semantic versioning.",
+            importance=0.9,
+        )
+    )
+    assert await os.access_log.last_accessed("t1", node.id) is None
+    await os.assemble(
+        ContextRequest(
+            tenant_id="t1", task="What about stable releases?", agent="assistant", token_budget=300
+        )
+    )
+    assert await os.access_log.last_accessed("t1", node.id) is not None
+
+
+def test_suggest_tier_rules() -> None:
+    now = utcnow()
+    active = ContextNode(
+        tenant_id="t1",
+        node_type="fact",
+        memory_type=MemoryType.SEMANTIC,
+        metadata={"active_workflow": True},
+    )
+    assert suggest_tier(active, last_accessed=None, now=now) is StorageTier.HOT
+
+    recently_accessed = ContextNode(
+        tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, importance=0.1
+    )
+    assert suggest_tier(recently_accessed, last_accessed=now, now=now) is StorageTier.WARM
+
+    important = ContextNode(
+        tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, importance=0.9
+    )
+    assert suggest_tier(important, last_accessed=None, now=now) is StorageTier.WARM
+
+    retained = ContextNode(
+        tenant_id="t1",
+        node_type="fact",
+        memory_type=MemoryType.SEMANTIC,
+        importance=0.1,
+        metadata={"retention_required": True},
+    )
+    assert suggest_tier(retained, last_accessed=None, now=now) is StorageTier.COLD
+
+    stale = ContextNode(
+        tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, importance=0.1
+    )
+    assert suggest_tier(stale, last_accessed=None, now=now) is StorageTier.ARCHIVE
+
+
+@pytest.mark.asyncio
+async def test_apply_tiering_policy_moves_stale_low_importance_node() -> None:
+    os = ContextOS()
+    node = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, importance=0.1)
+    )
+    assert node.storage_tier is StorageTier.WARM  # default
+
+    moved = await os.apply_tiering_policy("t1")
+    assert len(moved) == 1
+    assert moved[0].storage_tier is StorageTier.ARCHIVE

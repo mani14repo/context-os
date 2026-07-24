@@ -14,8 +14,9 @@ from contextos.models import (
     StorageTier,
 )
 from contextos.orchestration.orchestrator import ContextOrchestrator
-from contextos.protocols import Compactor, ContextStore, GraphStore, TierManager
+from contextos.protocols import AccessLog, Compactor, ContextStore, GraphStore, TierManager
 from contextos.storage.memory import InMemoryContextStore
+from contextos.tiering import suggest_tier
 
 
 class ContextOS:
@@ -27,13 +28,17 @@ class ContextOS:
         graph: GraphStore | None = None,
         compactor: Compactor | None = None,
         tier_manager: TierManager | None = None,
+        access_log: AccessLog | None = None,
     ) -> None:
         default_store = store or InMemoryContextStore()
         self.store: ContextStore = default_store
         self.graph: GraphStore = graph or default_store  # type: ignore[assignment]
         self.compactor: Compactor = compactor or SimpleCompactor()
         self.tier_manager: TierManager = tier_manager or default_store  # type: ignore[assignment]
-        self.orchestrator = ContextOrchestrator(self.store, self.graph, self.compactor)
+        self.access_log: AccessLog = access_log or default_store  # type: ignore[assignment]
+        self.orchestrator = ContextOrchestrator(
+            self.store, self.graph, self.compactor, self.access_log
+        )
 
     async def ingest(self, node: ContextNode) -> ContextNode:
         return await self.store.put_node(node)
@@ -43,6 +48,11 @@ class ContextOS:
 
     async def search(self, query: ContextQuery) -> list[ContextNode]:
         return list(await self.store.search(query))
+
+    async def history(self, tenant_id: str, node_id: UUID) -> list[ContextNode]:
+        """Prior versions of a node, oldest first. Empty if the node doesn't exist or
+        has never been updated -- see the immutability note on `ContextStore.put_node`."""
+        return list(await self.store.get_history(tenant_id, node_id))
 
     async def assemble(self, request: ContextRequest) -> ContextPackage:
         return await self.orchestrator.assemble(request)
@@ -55,3 +65,18 @@ class ContextOS:
 
     async def move(self, tenant_id: str, node_id: UUID, tier: StorageTier) -> ContextNode:
         return await self.tier_manager.move(tenant_id, node_id, tier)
+
+    async def apply_tiering_policy(self, tenant_id: str) -> list[ContextNode]:
+        """Re-tier every node for a tenant using contextos.tiering.suggest_tier(), based
+        on access recency (from `access_log`), importance, and the `active_workflow`/
+        `retention_required` metadata flags. Returns the nodes that were moved. Limited
+        to a tenant's first 200 nodes (ContextQuery.max_results ceiling) per call."""
+        query = ContextQuery(tenant_id=tenant_id, query="", max_results=200)
+        nodes = await self.store.search(query)
+        moved: list[ContextNode] = []
+        for node in nodes:
+            last_accessed = await self.access_log.last_accessed(tenant_id, node.id)
+            suggested = suggest_tier(node, last_accessed=last_accessed)
+            if suggested != node.storage_tier:
+                moved.append(await self.tier_manager.move(tenant_id, node.id, suggested))
+        return moved

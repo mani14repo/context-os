@@ -124,7 +124,7 @@ src/contextos/
 
 ## Extending ContextOS
 
-`ContextOS` accepts four independently swappable collaborators, each defined as a
+`ContextOS` accepts five independently swappable collaborators, each defined as a
 `Protocol` in `contextos.protocols` so a custom implementation only needs to match
 the method signatures — no base class to inherit:
 
@@ -136,42 +136,64 @@ os = ContextOS(
     graph=MyGraphBackend(),       # implements contextos.protocols.GraphStore, defaults to `store`
     compactor=MyLLMCompactor(),   # implements contextos.protocols.Compactor, defaults to SimpleCompactor
     tier_manager=MyTierManager(), # implements contextos.protocols.TierManager, defaults to `store`
+    access_log=MyAccessLog(),     # implements contextos.protocols.AccessLog, defaults to `store`
 )
 ```
 
-If you only override `store`, `graph` and `tier_manager` fall back to it automatically,
-matching the built-in `InMemoryContextStore`, which implements all three protocols at once.
-See `CONTRIBUTING.md` for the expectation that new storage or model providers implement
-these protocols rather than coupling the core package to a specific vendor.
+If you only override `store`, the other four fall back to it automatically, matching
+the built-in `InMemoryContextStore` and `SQLiteContextStore`, which each implement all
+five protocols at once. See `CONTRIBUTING.md` for the expectation that new storage or
+model providers implement these protocols rather than coupling the core package to a
+specific vendor.
+
+## Versioning, temporal validity, access logging, and tiering
+
+A few of the design principles from the architecture-decisions section are enforced,
+not just modeled:
+
+- **Immutable history.** `ContextStore.put_node()` archives the prior version instead
+  of overwriting it whenever you re-ingest an existing node id, and bumps `version`.
+  Retrieve prior versions with `ContextOS.history(tenant_id, node_id)`.
+- **Temporal validity.** `valid_from`/`valid_to` are enforced during `search()` (via
+  `ContextQuery.as_of`, defaulting to now) and during graph traversal — expired nodes
+  and edges are excluded automatically.
+- **Access logging.** Every node included in an assembled `ContextPackage` is recorded
+  via the `AccessLog` protocol (`record`/`last_accessed`), keyed by tenant, agent, and
+  task.
+- **Automatic tiering.** `ContextOS.apply_tiering_policy(tenant_id)` re-tiers nodes
+  using `contextos.tiering.suggest_tier()` — active-workflow nodes go hot, recently
+  accessed or high-importance nodes go warm, nodes flagged `retention_required` go
+  cold, everything else drifts to archive. It's invoked explicitly (there's no
+  background scheduler in a library), but the decision itself is policy-driven rather
+  than manual.
 
 ## Known limitations
 
-The reference (`InMemoryContextStore`) implementation intentionally keeps v0.1 small.
-Known gaps, tracked as GitHub issues:
+The reference (`InMemoryContextStore`/`SQLiteContextStore`) implementations
+intentionally keep v0.1 small. Known gaps, tracked as GitHub issues:
 
-- `valid_from`/`valid_to` are modeled on `ContextNode` but not enforced during search or
-  graph traversal.
-- `put_node` overwrites in place; updates do not create a new `version` or retain history,
-  so the "context is immutable by default" design principle is not yet enforced.
-- No access logging, so storage tiering has no automatic recency/frequency signal to act on;
-  tier changes are manual via `ContextOS.move()`.
 - No ingestion pipeline: `ContextOS.ingest()` stores the `ContextNode` you hand it as-is —
   there is no automatic classification, entity extraction, or embedding generation.
-- No vector/semantic search: `InMemoryContextStore.search()` uses lexical token overlap,
-  not embeddings.
-- No governance layer (authorization, retention, redaction) — see `SECURITY.md`.
+- No vector/semantic search: `search()` uses lexical token overlap, not embeddings.
+- No governance layer (authorization, retention rules, redaction) — see `SECURITY.md`.
+- No contradiction/supersession resolution: edges can be tagged `contradicts` or
+  `supersedes`, but nothing acts on that yet.
+- `apply_tiering_policy()` processes at most 200 nodes per tenant per call (the
+  `ContextQuery.max_results` ceiling); there's no pagination for larger tenants yet.
 
 ## Roadmap
 
 ### 0.1 — Foundation
 
 - [x] Memory taxonomy
-- [x] Temporal nodes and edges
+- [x] Temporal nodes and edges, with validity enforced in search and traversal
 - [x] Multi-tenant in-memory store
 - [x] Progressive compaction contract
 - [x] Token-budgeted context assembly
 - [x] FastAPI and Docker entry points
 - [x] Tests and GitHub Actions
+- [x] Immutable node history/versioning on update
+- [x] Access logging and a policy-driven (if manually invoked) tiering function
 
 ### 0.2 — Production adapters
 
@@ -179,7 +201,7 @@ Known gaps, tracked as GitHub issues:
 - [ ] PostgreSQL + pgvector store
 - [ ] Redis working-memory/cache adapter
 - [ ] S3/Azure Blob artifact adapter
-- [ ] OpenTelemetry traces and access logs
+- [ ] OpenTelemetry traces
 - [ ] Pluggable embedding and reranking providers
 
 ### 0.3 — Governance

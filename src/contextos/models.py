@@ -90,6 +90,10 @@ class ContextQuery(BaseModel):
     max_results: int = Field(default=20, ge=1, le=200)
     minimum_confidence: float = Field(default=0.0, ge=0, le=1)
     graph_depth: int = Field(default=1, ge=0, le=5)
+    as_of: datetime | None = Field(
+        default=None,
+        description="Only match nodes valid at this instant; defaults to now.",
+    )
 
 
 class ContextRequest(BaseModel):
