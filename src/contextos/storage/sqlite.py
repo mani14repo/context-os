@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
+from contextos.errors import LegalHoldError
 from contextos.models import ContextEdge, ContextNode, ContextQuery, StorageTier, utcnow
 from contextos.search import score_node
 
@@ -128,6 +129,9 @@ class SQLiteContextStore:
         return datetime.fromisoformat(row[0])
 
     async def delete_node(self, tenant_id: str, node_id: UUID) -> bool:
+        existing = await self.get_node(tenant_id, node_id)
+        if existing is not None and existing.legal_hold:
+            raise LegalHoldError(tenant_id, node_id)
         cursor = self._conn.execute(
             "DELETE FROM nodes WHERE id = ? AND tenant_id = ?",
             (str(node_id), tenant_id),
@@ -161,6 +165,13 @@ class SQLiteContextStore:
         )
         self._conn.commit()
         return edge
+
+    async def edges_for_node(self, tenant_id: str, node_id: UUID) -> Sequence[ContextEdge]:
+        rows = self._conn.execute(
+            "SELECT data FROM edges WHERE tenant_id = ? AND (source_node_id = ? OR target_node_id = ?)",
+            (tenant_id, str(node_id), str(node_id)),
+        ).fetchall()
+        return [ContextEdge.model_validate_json(data) for (data,) in rows]
 
     async def search(self, query: ContextQuery) -> Sequence[ContextNode]:
         rows = self._conn.execute(

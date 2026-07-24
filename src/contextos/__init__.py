@@ -1,5 +1,6 @@
 from contextos.library import ContextOS
 from contextos.models import (
+    Classification,
     CompressionLevel,
     ContextEdge,
     ContextNode,
@@ -11,6 +12,7 @@ from contextos.models import (
 )
 
 __all__ = [
+    "Classification",
     "CompressionLevel",
     "ContextEdge",
     "ContextNode",

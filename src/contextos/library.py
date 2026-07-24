@@ -20,8 +20,11 @@ from contextos.protocols import (
     Compactor,
     ContextStore,
     GraphStore,
+    Redactor,
     TierManager,
 )
+from contextos.redaction import RegexRedactor
+from contextos.retention import is_eligible_for_deletion
 from contextos.storage.memory import InMemoryContextStore
 from contextos.tiering import suggest_tier
 from contextos.tracing import start_span
@@ -38,6 +41,7 @@ class ContextOS:
         tier_manager: TierManager | None = None,
         access_log: AccessLog | None = None,
         artifacts: ArtifactStore | None = None,
+        redactor: Redactor | None = None,
     ) -> None:
         default_store = store or InMemoryContextStore()
         self.store: ContextStore = default_store
@@ -45,10 +49,11 @@ class ContextOS:
         self.compactor: Compactor = compactor or SimpleCompactor()
         self.tier_manager: TierManager = tier_manager or default_store  # type: ignore[assignment]
         self.access_log: AccessLog = access_log or default_store  # type: ignore[assignment]
-        # Unlike the other four collaborators, artifact storage has no in-process
+        # Unlike the other five collaborators, artifact storage has no in-process
         # fallback: InMemoryContextStore/SQLiteContextStore don't implement
         # ArtifactStore, so this stays None unless you pass one explicitly.
         self.artifacts = artifacts
+        self.redactor: Redactor = redactor or RegexRedactor()
         self.orchestrator = ContextOrchestrator(
             self.store, self.graph, self.compactor, self.access_log
         )
@@ -72,6 +77,25 @@ class ContextOS:
         """Prior versions of a node, oldest first. Empty if the node doesn't exist or
         has never been updated -- see the immutability note on `ContextStore.put_node`."""
         return list(await self.store.get_history(tenant_id, node_id))
+
+    async def delete(self, tenant_id: str, node_id: UUID) -> bool:
+        """Delete a node. Raises `contextos.errors.LegalHoldError` instead of deleting
+        if the node has `legal_hold=True` -- see contextos.retention."""
+        return await self.store.delete_node(tenant_id, node_id)
+
+    async def edges_for(self, tenant_id: str, node_id: UUID) -> list[ContextEdge]:
+        """Every edge touching this node, in either direction. Used by
+        contextos.workflows to find `contradicts`/`supersedes` relationships."""
+        return list(await self.graph.edges_for_node(tenant_id, node_id))
+
+    async def redact(self, content: str) -> str:
+        """Apply the configured Redactor (default: contextos.redaction.RegexRedactor,
+        a deterministic PII-pattern stripper) to a piece of text. This is a data
+        transformation, not access control -- ContextOS has no authorization concept
+        (see README "Known limitations"), so it doesn't decide *when* to redact based
+        on who's asking; callers apply it explicitly, e.g. before returning
+        `classification=CONFIDENTIAL` content to an untrusted destination."""
+        return await self.redactor.redact(content)
 
     async def assemble(self, request: ContextRequest) -> ContextPackage:
         return await self.orchestrator.assemble(request)
@@ -122,3 +146,20 @@ class ContextOS:
                     moved.append(await self.tier_manager.move(tenant_id, node.id, suggested))
             span.set_attribute("contextos.moved_count", len(moved))
         return moved
+
+    async def apply_retention_policy(self, tenant_id: str) -> list[ContextNode]:
+        """Delete every node for a tenant whose `retention_until` has passed, skipping
+        any node with `legal_hold=True` (see `contextos.retention.is_eligible_for_deletion`).
+        Returns the nodes that were deleted. Limited to a tenant's first 200 nodes
+        (`ContextQuery.max_results` ceiling) per call, same as `apply_tiering_policy()`."""
+        with start_span("contextos.apply_retention_policy", tenant_id=tenant_id) as span:
+            query = ContextQuery(tenant_id=tenant_id, query="", max_results=200)
+            nodes = await self.store.search(query)
+            deleted: list[ContextNode] = []
+            for node in nodes:
+                if is_eligible_for_deletion(node) and await self.store.delete_node(
+                    tenant_id, node.id
+                ):
+                    deleted.append(node)
+            span.set_attribute("contextos.deleted_count", len(deleted))
+        return deleted

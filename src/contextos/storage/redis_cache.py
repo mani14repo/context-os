@@ -79,6 +79,9 @@ class RedisCachedContextStore:
     ) -> Sequence[ContextNode]:
         return await self._store.neighbors(tenant_id, node_ids, depth)
 
+    async def edges_for_node(self, tenant_id: str, node_id: UUID) -> Sequence[ContextEdge]:
+        return await self._store.edges_for_node(tenant_id, node_id)
+
     async def move(self, tenant_id: str, node_id: UUID, tier: StorageTier) -> ContextNode:
         result = await self._store.move(tenant_id, node_id, tier)
         await self._redis.delete(self._key(tenant_id, node_id))

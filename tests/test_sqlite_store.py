@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 
 from contextos import ContextEdge, ContextNode, ContextOS, ContextRequest, MemoryType, StorageTier
+from contextos.errors import LegalHoldError
 from contextos.models import ContextQuery, utcnow
 from contextos.storage.sqlite import SQLiteContextStore
 
@@ -164,4 +165,41 @@ async def test_access_log_records_and_returns_last_accessed(tmp_path) -> None:
     assert await store.last_accessed("t1", node.id) is None
     await store.record("t1", node.id, "test-agent", "test task")
     assert await store.last_accessed("t1", node.id) is not None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_edges_for_node_returns_both_directions(tmp_path) -> None:
+    store = SQLiteContextStore(tmp_path / "context.db")
+    a = await store.put_node(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    b = await store.put_node(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    c = await store.put_node(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    await store.put_edge(
+        ContextEdge(tenant_id="t1", source_node_id=a.id, target_node_id=b.id, relationship="supports")
+    )
+    await store.put_edge(
+        ContextEdge(tenant_id="t1", source_node_id=c.id, target_node_id=a.id, relationship="contradicts")
+    )
+    edges = await store.edges_for_node("t1", a.id)
+    assert {edge.relationship for edge in edges} == {"supports", "contradicts"}
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_raises_legal_hold_error(tmp_path) -> None:
+    store = SQLiteContextStore(tmp_path / "context.db")
+    node = await store.put_node(
+        ContextNode(
+            tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC, legal_hold=True
+        )
+    )
+    with pytest.raises(LegalHoldError):
+        await store.delete_node("t1", node.id)
+    assert await store.get_node("t1", node.id) is not None
     store.close()

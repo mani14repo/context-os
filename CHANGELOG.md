@@ -30,6 +30,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Governance primitives (0.3 roadmap, minus authorization/ABAC, which is still open):
+  - Retention and legal hold: `ContextNode.retention_until`/`legal_hold` fields, new
+    `LegalHoldError` (`contextos.errors`), `ContextOS.apply_retention_policy(tenant_id)`
+    sweeping expired-and-not-held nodes, and `ContextOS.delete()` now raises
+    `LegalHoldError` instead of silently deleting a held node. Validated against
+    `InMemoryContextStore`, `SQLiteContextStore`, and a live Postgres container.
+  - Classification and redaction: new `Classification` enum (`public`/`internal`/
+    `confidential`/`restricted`) on `ContextNode`, new `Redactor` protocol
+    (`contextos.protocols`) with a default `RegexRedactor` (`contextos.redaction`,
+    strips emails/SSNs/phone numbers/credit-card numbers), and `ContextOS.redact()`.
+    `ContextOS` constructor now also accepts `redactor` as an independently swappable
+    collaborator (defaults to `RegexRedactor`, not to `store`). Fixed a regex bug found
+    before writing formal tests: the credit-card pattern's separator class was
+    consuming a trailing space, producing run-on redacted text.
+  - Contradiction and supersession workflows: `contextos.workflows.supersede()` (links
+    two nodes with a `supersedes` edge and ends the old node's temporal validity) and
+    `contextos.workflows.contradictions_for()` (returns nodes connected by a
+    `contradicts` edge). Built entirely on existing edges + temporal validity rather
+    than a new subsystem; kept as free functions (not `ContextOS` methods) to avoid a
+    circular import with `library.py`.
+  - Immutable provenance manifests: `contextos.provenance.build_provenance_manifest()`
+    builds a hash-chained manifest over a node's full version history;
+    `verify_provenance_manifest()` detects tampering -- including a direct store
+    mutation that bypasses `put_node()` entirely, verified against both an archived
+    version and the current version.
+  - New `GraphStore.edges_for_node()` protocol method (implemented by all four stores)
+    backing both the workflows and the `ContextOS.edges_for()` facade method.
+  - Examples: `examples/retention_and_legal_hold.py`,
+    `examples/redaction_and_classification.py`, `examples/provenance_and_workflows.py`.
 - LangGraph `BaseStore` adapter: `contextos.integrations.langgraph.ContextOSStore`
   implements LangGraph's `BaseStore` (`abatch`; sync `batch()` raises
   `NotImplementedError` since ContextOS is async-only), so it plugs directly into

@@ -17,6 +17,7 @@ from contextos import (
     StorageTier,
 )
 from contextos.embeddings import HashingEmbeddingProvider
+from contextos.errors import LegalHoldError
 from contextos.models import ContextQuery
 from contextos.storage.postgres import PostgresContextStore
 
@@ -201,3 +202,38 @@ async def test_postgres_store_works_as_contextos_backend(store) -> None:
         )
     )
     assert package.items
+
+
+@pytest.mark.asyncio
+async def test_edges_for_node_returns_both_directions(store) -> None:
+    tenant = _tenant()
+    a = await store.put_node(
+        ContextNode(tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    b = await store.put_node(
+        ContextNode(tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    c = await store.put_node(
+        ContextNode(tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    await store.put_edge(
+        ContextEdge(tenant_id=tenant, source_node_id=a.id, target_node_id=b.id, relationship="supports")
+    )
+    await store.put_edge(
+        ContextEdge(tenant_id=tenant, source_node_id=c.id, target_node_id=a.id, relationship="contradicts")
+    )
+    edges = await store.edges_for_node(tenant, a.id)
+    assert {edge.relationship for edge in edges} == {"supports", "contradicts"}
+
+
+@pytest.mark.asyncio
+async def test_delete_raises_legal_hold_error(store) -> None:
+    tenant = _tenant()
+    node = await store.put_node(
+        ContextNode(
+            tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC, legal_hold=True
+        )
+    )
+    with pytest.raises(LegalHoldError):
+        await store.delete_node(tenant, node.id)
+    assert await store.get_node(tenant, node.id) is not None

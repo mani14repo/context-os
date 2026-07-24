@@ -8,6 +8,7 @@ from uuid import UUID
 import asyncpg
 from pgvector.asyncpg import register_vector
 
+from contextos.errors import LegalHoldError
 from contextos.models import ContextEdge, ContextNode, ContextQuery, StorageTier, utcnow
 from contextos.protocols import EmbeddingProvider
 from contextos.search import node_haystack, passes_filters
@@ -173,6 +174,9 @@ class PostgresContextStore:
         return row["ts"] if row else None
 
     async def delete_node(self, tenant_id: str, node_id: UUID) -> bool:
+        existing = await self.get_node(tenant_id, node_id)
+        if existing is not None and existing.legal_hold:
+            raise LegalHoldError(tenant_id, node_id)
         async with self._pool.acquire() as conn, conn.transaction():
             result = await conn.execute(
                 "DELETE FROM nodes WHERE id = $1 AND tenant_id = $2", node_id, tenant_id
@@ -217,6 +221,16 @@ class PostgresContextStore:
                 edge.model_dump_json(),
             )
         return edge
+
+    async def edges_for_node(self, tenant_id: str, node_id: UUID) -> Sequence[ContextEdge]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT data FROM edges WHERE tenant_id = $1 "
+                "AND (source_node_id = $2 OR target_node_id = $2)",
+                tenant_id,
+                node_id,
+            )
+        return [ContextEdge.model_validate_json(row["data"]) for row in rows]
 
     async def search(self, query: ContextQuery) -> Sequence[ContextNode]:
         fetch_limit = min(max(query.max_results * 4, query.max_results), 500)

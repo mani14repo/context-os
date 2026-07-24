@@ -37,6 +37,13 @@ class CompressionLevel(StrEnum):
     ORIGINAL = "original"
 
 
+class Classification(StrEnum):
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    CONFIDENTIAL = "confidential"
+    RESTRICTED = "restricted"
+
+
 class ContextRepresentation(BaseModel):
     level: CompressionLevel
     content: str | None = None
@@ -65,6 +72,13 @@ class ContextNode(BaseModel):
     version: int = Field(default=1, ge=1)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+    classification: Classification = Classification.INTERNAL
+    retention_until: datetime | None = Field(
+        default=None, description="Eligible for deletion by apply_retention_policy() after this instant."
+    )
+    legal_hold: bool = Field(
+        default=False, description="Blocks delete_node() regardless of retention_until."
+    )
 
 
 class ContextEdge(BaseModel):

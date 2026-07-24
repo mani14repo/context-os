@@ -140,6 +140,9 @@ asyncio.run(main())
 | `examples/langgraph_store.py` | `ContextOSStore` as a LangGraph `BaseStore`, plugged into `StateGraph.compile(store=...)` for cross-thread memory that persists through ContextOS (needs `pip install -e ".[langgraph]"`) |
 | `examples/a2a_envelope.py` | Converting a `ContextPackage` to a real `a2a.types.Artifact` and an inbound `a2a.types.Message` to a `ContextNode`, using the official `a2a-sdk` types (needs `pip install -e ".[a2a]"`) |
 | `examples/evaluation_suite.py` | Scoring `assemble()`'s retrieval precision/recall/f1 against known-correct node ids -- and showing a real precision gap the ranking formula has on a small corpus |
+| `examples/retention_and_legal_hold.py` | `apply_retention_policy()` sweeping expired nodes while `legal_hold` blocks deletion (`delete()` raises `LegalHoldError`, not a silent no-op) |
+| `examples/redaction_and_classification.py` | `classification` as a label plus `redact()` as an explicit, callable data transformation -- not access control |
+| `examples/provenance_and_workflows.py` | `supersede()`/`contradictions_for()` built on existing edges and temporal validity, plus a hash-chained provenance manifest that detects a direct (bypassing ContextOS) store mutation |
 
 ## Core concepts
 
@@ -177,6 +180,11 @@ src/contextos/
 ├── compaction/simple.py     # Deterministic fallback compactor
 ├── orchestration/           # Retrieval, ranking, budget fitting
 ├── evaluation.py             # Framework-neutral precision/recall/f1 eval suite
+├── errors.py                 # LegalHoldError and other domain exceptions
+├── redaction.py              # Redactor protocol default: RegexRedactor
+├── retention.py              # Retention-eligibility decision function
+├── workflows.py              # supersede() / contradictions_for()
+├── provenance.py             # Hash-chained provenance manifests
 ├── api/app.py               # Optional FastAPI service
 ├── integrations/langgraph.py # LangGraph prompt-formatting helper + BaseStore adapter
 ├── integrations/mcp_server.py # MCP tool server wrapping a ContextOS instance
@@ -198,6 +206,7 @@ os = ContextOS(
     compactor=MyLLMCompactor(),   # implements contextos.protocols.Compactor, defaults to SimpleCompactor
     tier_manager=MyTierManager(), # implements contextos.protocols.TierManager, defaults to `store`
     access_log=MyAccessLog(),     # implements contextos.protocols.AccessLog, defaults to `store`
+    redactor=MyRedactor(),        # implements contextos.protocols.Redactor, defaults to RegexRedactor
 )
 ```
 
@@ -375,6 +384,61 @@ not just modeled:
   background scheduler in a library), but the decision itself is policy-driven rather
   than manual.
 
+## Governance
+
+Four primitives, no optional extras needed for any of them -- all four are built on
+fields and mechanisms already core to the library (`GraphStore`, temporal validity,
+`put_node()`'s archival-on-update). This is the `0.3` roadmap item, minus the
+authorization/ABAC decision point, which is still open (see "Known limitations").
+
+**Retention and legal hold.** `ContextNode.retention_until` marks an eligibility
+deadline for deletion; `ContextNode.legal_hold` overrides it. `ContextOS.apply_retention_policy(tenant_id)`
+sweeps a tenant's nodes (same 200-node search cap as `apply_tiering_policy()`) and
+deletes whatever is past its deadline and not held. `ContextOS.delete()` raises
+`LegalHoldError`, not a silent no-op, if you try to delete a held node directly.
+
+```python
+from datetime import timedelta
+from contextos import ContextNode, ContextOS
+from contextos.models import utcnow
+
+os = ContextOS()
+node = await os.ingest(ContextNode(
+    tenant_id="acme", node_type="working_note",
+    content="Scratch note.", retention_until=utcnow() - timedelta(days=1),
+))
+deleted = await os.apply_retention_policy("acme")  # -> [node]
+```
+
+**Classification and redaction.** `ContextNode.classification` (`public`/`internal`/
+`confidential`/`restricted`) is a label, not enforcement -- ContextOS has no
+authorization concept, so it doesn't gate reads on it. `ContextOS.redact(content)`
+is the enforcement-adjacent piece: an explicit, callable data transformation a
+caller applies before handing confidential content to an untrusted destination
+(a third-party LLM call, a public summary, a support ticket). The default
+`RegexRedactor` (`contextos.redaction`) strips emails, SSNs, phone numbers, and
+credit-card numbers; implement `contextos.protocols.Redactor` for anything more
+(NER, an LLM call, a DLP service) and pass it as `ContextOS(redactor=...)`.
+
+**Contradiction and supersession workflows.** `contextos.workflows.supersede(context_os,
+tenant_id, new_node_id=..., old_node_id=...)` links the two nodes with a `supersedes`
+edge and ends the old node's temporal validity (`valid_to = utcnow()`), so it drops
+out of `search()`/`assemble()` the same way any expired node does -- no new subsystem,
+just composing edges with temporal validity. `contextos.workflows.contradictions_for(context_os,
+tenant_id, node_id)` returns the nodes connected to it by a `contradicts` edge, so a
+caller can surface known conflicts instead of silently returning one side of a dispute.
+
+**Provenance manifests.** `contextos.provenance.build_provenance_manifest(context_os,
+tenant_id, node_id)` builds a hash-chained manifest over a node's full version history
+(`ContextOS.history()` plus the current version): each version is SHA-256'd, and the
+per-version hashes are chained into one `manifest_hash`. `verify_provenance_manifest()`
+rebuilds the manifest and compares hashes -- it returns `False` if any archived or
+current version was mutated by something that bypassed `put_node()` entirely (a direct
+store write), which is exactly the tamper scenario a manifest exists to catch.
+
+See `examples/retention_and_legal_hold.py`, `examples/redaction_and_classification.py`,
+and `examples/provenance_and_workflows.py` for runnable end-to-end demos of all four.
+
 ## Known limitations
 
 Known gaps, tracked as GitHub issues:
@@ -389,11 +453,17 @@ Known gaps, tracked as GitHub issues:
   embeddings. `PostgresContextStore` ranks by real pgvector cosine distance, but its
   default `HashingEmbeddingProvider` captures shared vocabulary, not meaning — plug in
   a real embedding model via the same protocol for genuine semantic search.
-- No governance layer (authorization, retention rules, redaction) — see `SECURITY.md`.
-- No contradiction/supersession resolution: edges can be tagged `contradicts` or
-  `supersedes`, but nothing acts on that yet.
-- `apply_tiering_policy()` processes at most 200 nodes per tenant per call (the
-  `ContextQuery.max_results` ceiling); there's no pagination for larger tenants yet.
+- No authorization layer: `classification` is a label and `redact()` is opt-in --
+  nothing in ContextOS stops a caller from reading a `restricted` node's original
+  content or skipping `redact()` before forwarding it. There is still no ABAC/RBAC
+  decision point gating reads or writes on tenant, agent, or classification — see
+  `SECURITY.md`.
+- `RegexRedactor`'s phone-number pattern is US-centric and, because it's anchored on
+  `\b`, leaves a leading `(` behind for parenthesized area codes (`(555) 123-4567` ->
+  `([REDACTED:PHONE]`); it's a reasonable default, not a general-purpose PII scrubber.
+- `apply_tiering_policy()` and `apply_retention_policy()` each process at most 200
+  nodes per tenant per call (the `ContextQuery.max_results` ceiling); there's no
+  pagination for larger tenants yet.
 - `PostgresContextStore`'s vector `dimensions` is fixed at table-creation time; changing
   embedding providers/dimensions after data exists needs an explicit migration.
 - `S3ArtifactStore`/`AzureBlobArtifactStore` namespace pointers by tenant_id in the key
@@ -444,10 +514,14 @@ Known gaps, tracked as GitHub issues:
 ### 0.3 — Governance
 
 - [ ] Authorization decision point and ABAC hooks
-- [ ] Retention rules and legal-hold support
-- [ ] Context redaction and classification
-- [ ] Contradiction and supersession workflows
-- [ ] Immutable provenance manifests
+- [x] Retention rules and legal-hold support (`retention_until`/`legal_hold` fields,
+      `ContextOS.apply_retention_policy()`, `LegalHoldError`; see `examples/retention_and_legal_hold.py`)
+- [x] Context redaction and classification (`Classification` enum, `Redactor` protocol
+      + default `RegexRedactor`, `ContextOS.redact()`; see `examples/redaction_and_classification.py`)
+- [x] Contradiction and supersession workflows (`contextos.workflows.supersede()` /
+      `contradictions_for()`, built on edges + temporal validity; see `examples/provenance_and_workflows.py`)
+- [x] Immutable provenance manifests (`contextos.provenance` hash-chained manifests over
+      version history, with tamper detection; see `examples/provenance_and_workflows.py`)
 
 ### 0.4 — Agent ecosystem
 

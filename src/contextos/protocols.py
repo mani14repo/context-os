@@ -28,6 +28,7 @@ class GraphStore(Protocol):
     async def neighbors(
         self, tenant_id: str, node_ids: Sequence[UUID], depth: int = 1
     ) -> Sequence[ContextNode]: ...
+    async def edges_for_node(self, tenant_id: str, node_id: UUID) -> Sequence[ContextEdge]: ...
 
 
 class TierManager(Protocol):
@@ -52,6 +53,10 @@ class FullContextStore(ContextStore, GraphStore, TierManager, AccessLog, Protoco
     implements together, as InMemoryContextStore, SQLiteContextStore, and
     PostgresContextStore all do. Used to type wrappers/decorators (e.g.
     RedisCachedContextStore) that need the full surface of an underlying store."""
+
+
+class Redactor(Protocol):
+    async def redact(self, content: str) -> str: ...
 
 
 class ArtifactStore(Protocol):

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
+from contextos.errors import LegalHoldError
 from contextos.models import ContextEdge, ContextNode, ContextQuery, StorageTier, utcnow
 from contextos.search import score_node
 
@@ -58,6 +59,8 @@ class InMemoryContextStore:
         node = self.nodes.get(node_id)
         if node is None or node.tenant_id != tenant_id:
             return False
+        if node.legal_hold:
+            raise LegalHoldError(tenant_id, node_id)
         del self.nodes[node_id]
         self.history.pop(node_id, None)
         self.edges = {
@@ -76,6 +79,14 @@ class InMemoryContextStore:
             raise ValueError("Cross-tenant edges are not allowed")
         self.edges[edge.id] = edge.model_copy(deep=True)
         return edge
+
+    async def edges_for_node(self, tenant_id: str, node_id: UUID) -> Sequence[ContextEdge]:
+        return [
+            edge.model_copy(deep=True)
+            for edge in self.edges.values()
+            if edge.tenant_id == tenant_id
+            and (edge.source_node_id == node_id or edge.target_node_id == node_id)
+        ]
 
     async def search(self, query: ContextQuery) -> Sequence[ContextNode]:
         scored: list[tuple[float, ContextNode]] = []

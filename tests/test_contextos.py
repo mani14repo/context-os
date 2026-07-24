@@ -12,6 +12,7 @@ from contextos import (
     MemoryType,
     StorageTier,
 )
+from contextos.errors import LegalHoldError
 from contextos.models import ContextRepresentation, utcnow
 from contextos.tiering import suggest_tier
 
@@ -284,3 +285,54 @@ async def test_apply_tiering_policy_moves_stale_low_importance_node() -> None:
     moved = await os.apply_tiering_policy("t1")
     assert len(moved) == 1
     assert moved[0].storage_tier is StorageTier.ARCHIVE
+
+
+@pytest.mark.asyncio
+async def test_delete_raises_legal_hold_error() -> None:
+    os = ContextOS()
+    node = await os.ingest(
+        ContextNode(
+            tenant_id="t1",
+            node_type="fact",
+            memory_type=MemoryType.SEMANTIC,
+            legal_hold=True,
+        )
+    )
+    with pytest.raises(LegalHoldError):
+        await os.delete("t1", node.id)
+    # Node must still exist -- the delete was blocked, not silently partial.
+    assert await os.store.get_node("t1", node.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_without_legal_hold_succeeds() -> None:
+    os = ContextOS()
+    node = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    assert await os.delete("t1", node.id) is True
+    assert await os.store.get_node("t1", node.id) is None
+
+
+@pytest.mark.asyncio
+async def test_edges_for_returns_edges_touching_node_in_either_direction() -> None:
+    os = ContextOS()
+    a = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    b = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    c = await os.ingest(
+        ContextNode(tenant_id="t1", node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    await os.link(
+        ContextEdge(tenant_id="t1", source_node_id=a.id, target_node_id=b.id, relationship="supports")
+    )
+    await os.link(
+        ContextEdge(tenant_id="t1", source_node_id=c.id, target_node_id=a.id, relationship="contradicts")
+    )
+
+    edges = await os.edges_for("t1", a.id)
+    relationships = {edge.relationship for edge in edges}
+    assert relationships == {"supports", "contradicts"}

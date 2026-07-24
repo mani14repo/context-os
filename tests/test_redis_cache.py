@@ -11,7 +11,8 @@ pytestmark = pytest.mark.skipif(REDIS_URL is None, reason="CONTEXTOS_TEST_REDIS_
 
 import redis.asyncio as redis
 
-from contextos import ContextNode, MemoryType, StorageTier
+from contextos import ContextEdge, ContextNode, MemoryType, StorageTier
+from contextos.errors import LegalHoldError
 from contextos.storage.memory import InMemoryContextStore
 from contextos.storage.redis_cache import RedisCachedContextStore
 
@@ -150,3 +151,41 @@ async def test_search_and_neighbors_pass_through_uncached(redis_client) -> None:
         ContextQuery(tenant_id=tenant, query="Kubernetes")
     )
     assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_edges_for_node_passes_through(redis_client) -> None:
+    primary = CountingStore()
+    cached = RedisCachedContextStore(primary, redis_client, key_prefix=uuid4().hex)
+    tenant = _tenant()
+    a = await cached.put_node(
+        ContextNode(tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    b = await cached.put_node(
+        ContextNode(tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC)
+    )
+    await cached.put_edge(
+        ContextEdge(tenant_id=tenant, source_node_id=a.id, target_node_id=b.id, relationship="supports")
+    )
+    edges = await cached.edges_for_node(tenant, a.id)
+    assert [edge.relationship for edge in edges] == ["supports"]
+
+
+@pytest.mark.asyncio
+async def test_legal_hold_error_propagates_without_invalidating_cache(redis_client) -> None:
+    primary = CountingStore()
+    cached = RedisCachedContextStore(primary, redis_client, key_prefix=uuid4().hex)
+    tenant = _tenant()
+    node = await cached.put_node(
+        ContextNode(
+            tenant_id=tenant, node_type="fact", memory_type=MemoryType.SEMANTIC, legal_hold=True
+        )
+    )
+    await cached.get_node(tenant, node.id)  # warm the cache
+    with pytest.raises(LegalHoldError):
+        await cached.delete_node(tenant, node.id)
+    # Blocked delete should not have invalidated the (still-accurate) cache entry.
+    assert primary.get_node_calls == 1
+    reloaded = await cached.get_node(tenant, node.id)
+    assert reloaded is not None
+    assert primary.get_node_calls == 1
