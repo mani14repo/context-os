@@ -85,6 +85,20 @@ jobs:
           CONTEXTOS_TEST_S3_ACCESS_KEY: minioadmin
           CONTEXTOS_TEST_S3_SECRET_KEY: minioadmin
 
+  test-integrations:
+    # langgraph/mcp/a2a need no external service (unlike postgres/redis/s3/azure-blob
+    # above) -- but they still need their own job, not the main `test` job, since
+    # `test` only installs the `dev` extra and these tests would otherwise just skip
+    # silently via pytest.importorskip instead of actually running in CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,langgraph,mcp,a2a]"
+      - run: pytest -q tests/test_langgraph_store.py tests/test_mcp_server.py tests/test_a2a_envelope.py
+
   test-azure-blob:
     runs-on: ubuntu-latest
     steps:

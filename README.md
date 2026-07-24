@@ -84,6 +84,14 @@ pip install -e ".[mcp]"
 contextos-mcp
 ```
 
+For the LangGraph `BaseStore` adapter (cross-thread memory) and the A2A context
+exchange envelope:
+
+```bash
+pip install -e ".[langgraph]"
+pip install -e ".[a2a]"
+```
+
 ## Five-minute example
 
 ```python
@@ -129,6 +137,9 @@ asyncio.run(main())
 | `examples/azure_blob_store.py` | Same, backed by Azure Blob Storage/Azurite (needs `pip install -e ".[azure-blob]"`) |
 | `examples/opentelemetry_tracing.py` | Real spans for `ingest()`/`assemble()`/`move()` printed to the console via the OpenTelemetry SDK (needs `pip install -e ".[otel]"`) |
 | `examples/mcp_server.py` | Calling `ingest_context`/`assemble_context` over a real MCP `ClientSession` round trip, not a direct Python call (needs `pip install -e ".[mcp]"`) |
+| `examples/langgraph_store.py` | `ContextOSStore` as a LangGraph `BaseStore`, plugged into `StateGraph.compile(store=...)` for cross-thread memory that persists through ContextOS (needs `pip install -e ".[langgraph]"`) |
+| `examples/a2a_envelope.py` | Converting a `ContextPackage` to a real `a2a.types.Artifact` and an inbound `a2a.types.Message` to a `ContextNode`, using the official `a2a-sdk` types (needs `pip install -e ".[a2a]"`) |
+| `examples/evaluation_suite.py` | Scoring `assemble()`'s retrieval precision/recall/f1 against known-correct node ids -- and showing a real precision gap the ranking formula has on a small corpus |
 
 ## Core concepts
 
@@ -165,9 +176,11 @@ src/contextos/
 ├── tracing.py                # No-op-safe OpenTelemetry span helper
 ├── compaction/simple.py     # Deterministic fallback compactor
 ├── orchestration/           # Retrieval, ranking, budget fitting
+├── evaluation.py             # Framework-neutral precision/recall/f1 eval suite
 ├── api/app.py               # Optional FastAPI service
-├── integrations/langgraph.py # LangGraph prompt-formatting helper
-└── integrations/mcp_server.py # MCP tool server wrapping a ContextOS instance
+├── integrations/langgraph.py # LangGraph prompt-formatting helper + BaseStore adapter
+├── integrations/mcp_server.py # MCP tool server wrapping a ContextOS instance
+└── integrations/a2a.py       # A2A Artifact/Message <-> ContextPackage/ContextNode envelope
 ```
 
 ## Extending ContextOS
@@ -281,6 +294,66 @@ server.run()  # stdio by default; see FastMCP.run() for sse/streamable-http
 See `examples/mcp_server.py` for a runnable demo that connects a real `ClientSession`
 over in-memory streams and calls tools exactly as an external client would.
 
+## LangGraph `BaseStore` adapter
+
+`contextos.integrations.langgraph.ContextOSStore` implements LangGraph's `BaseStore`
+interface (needs `pip install -e ".[langgraph]"`), so it plugs directly into
+`StateGraph.compile(store=...)` and becomes LangGraph's cross-thread/long-term memory,
+persisted through whatever ContextStore ContextOS is configured with instead of
+LangGraph's own store implementations:
+
+```python
+from contextos import ContextOS
+from contextos.integrations.langgraph import ContextOSStore
+
+store = ContextOSStore(ContextOS())
+app = graph.compile(store=store)
+# inside a node: await langgraph.config.get_store().aput((user_id, "memories"), key, value)
+```
+
+`namespace[0]` becomes the ContextOS `tenant_id`; get/put/delete are direct
+`ContextStore` calls by a deterministic id derived from the full namespace + key, not
+a search. See the class docstring for the `search()`/`list_namespaces()` pagination
+caveat and why the sync `batch()` raises `NotImplementedError` (ContextOS is
+async-only throughout). `examples/langgraph_store.py` has a full runnable demo.
+
+## A2A context exchange envelope
+
+`contextos.integrations.a2a` (needs `pip install -e ".[a2a]"`) converts between
+ContextOS and the official `a2a-sdk` types in both directions:
+
+- `context_package_to_artifact(package, artifact_id=...)` -- an assembled
+  `ContextPackage` becomes a real `a2a.types.Artifact` (one `Part` per ranked item),
+  ready to attach to a Task/Message response for another A2A agent.
+- `a2a_message_to_context_node(message, tenant_id=...)` -- an inbound
+  `a2a.types.Message` becomes a `ContextNode` ready for `ContextOS.ingest()`, so
+  what another agent tells us becomes part of this agent's own memory.
+
+These use the SDK's protobuf types directly, not a hand-rolled approximation of the
+wire format -- `examples/a2a_envelope.py` verifies the real JSON shape via
+`google.protobuf.json_format.MessageToDict`.
+
+## Framework-neutral evaluation suite
+
+`contextos.evaluation.run_eval_suite()` needs no optional extras -- it only exercises
+`ContextOS.assemble()`, independent of whatever agent runtime calls it. Define
+`EvalCase`s (a task plus the node ids that should come back, or an empty set if
+nothing should), run the suite, get precision/recall/f1/latency per case plus
+aggregate means:
+
+```python
+from contextos.evaluation import EvalCase, run_eval_suite
+
+report = await run_eval_suite(context_os, [
+    EvalCase(case_id="c1", tenant_id="acme", task="...", expected_node_ids={node.id}),
+])
+```
+
+`examples/evaluation_suite.py` runs this for real and surfaces an honest finding, not
+a staged pass: precision comes out below 1.0 even on an off-topic case, because
+`_rank()`'s score always includes an importance term, so a sufficiently important node
+can clear the relevance bar for a nearly-unrelated task (see "Known limitations").
+
 ## Versioning, temporal validity, access logging, and tiering
 
 A few of the design principles from the architecture-decisions section are enforced,
@@ -331,6 +404,15 @@ Known gaps, tracked as GitHub issues:
   authentication or per-connection scoping — any client that can call the server can
   act as any tenant. Fine for local/single-tenant use; a real deployment needs an
   authorization layer in front of it (see the 0.3 governance roadmap).
+- `_rank()`'s score always includes `node.importance * 0.15` (see
+  `contextos/orchestration/orchestrator.py`), with no minimum relevance floor before
+  that term applies — a sufficiently important node can clear the ranking bar for a
+  task it has near-zero lexical overlap with, which shows up as real precision loss on
+  small corpora. `examples/evaluation_suite.py` demonstrates this rather than hiding
+  it; tightening the relevance/importance balance is open, not yet done.
+- `ContextOSStore` (the LangGraph adapter) filters/paginates `search()`/
+  `list_namespaces()` in Python after a 200-node-capped `ContextStore.search()` call —
+  the same ceiling `apply_tiering_policy()` has, not pushed down to storage.
 
 ## Roadmap
 
@@ -369,12 +451,15 @@ Known gaps, tracked as GitHub issues:
 
 ### 0.4 — Agent ecosystem
 
-- [x] LangGraph example (`examples/langgraph_integration.py`) — a full checkpointer/store adapter is still open
-- [ ] LangGraph state and store adapter
+- [x] LangGraph example (`examples/langgraph_integration.py`)
+- [x] LangGraph state and store adapter (`ContextOSStore(BaseStore)`; plugs into
+      `StateGraph.compile(store=...)`; validated against the real `BaseStore` API)
 - [x] MCP context server (`contextos.integrations.mcp_server.build_context_server()`;
       `contextos-mcp` CLI entry point; validated with a real MCP `ClientSession`)
-- [ ] A2A context exchange envelope
-- [ ] Framework-neutral evaluation suite
+- [x] A2A context exchange envelope (`contextos.integrations.a2a`, using the official
+      `a2a-sdk` protobuf types; verified against the real JSON wire format)
+- [x] Framework-neutral evaluation suite (`contextos.evaluation.run_eval_suite()` --
+      precision/recall/f1/latency against `assemble()`, no optional extras needed)
 
 ## Architecture decisions
 

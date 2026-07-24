@@ -19,9 +19,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exactly what CI installs. Also spot-checked every other extra (`postgres`, `redis`,
   `s3`, `langgraph`, `otel`, `mcp`) the same way -- installed alone, in a fresh venv --
   and found no other missing transitive dependencies.
+- `tests/test_mcp_server.py`, `tests/test_langgraph_store.py`, and
+  `tests/test_a2a_envelope.py` were never actually running in CI: the main `test` job
+  only installs the `dev` extra, so `pytest.importorskip("mcp"/"langgraph"/"a2a")`
+  silently skipped all three every run instead of exercising them -- the same class of
+  gap as the `aiohttp` issue above, just quieter (a skip, not a failure). Added a
+  `test-integrations` CI job installing `dev,langgraph,mcp,a2a` together (none of
+  these three need an external service); verified the combined install has no
+  dependency conflicts and all 18 tests pass under it before relying on it.
 
 ### Added
 
+- LangGraph `BaseStore` adapter: `contextos.integrations.langgraph.ContextOSStore`
+  implements LangGraph's `BaseStore` (`abatch`; sync `batch()` raises
+  `NotImplementedError` since ContextOS is async-only), so it plugs directly into
+  `StateGraph.compile(store=...)` as cross-thread/long-term memory backed by whatever
+  ContextStore ContextOS is configured with. `namespace[0]` maps to `tenant_id`;
+  get/put/delete use a deterministic `uuid5(namespace, key)` node id rather than a
+  search. Validated against the real public `BaseStore` API
+  (`aget`/`aput`/`adelete`/`asearch`/`alist_namespaces`), including tenant isolation
+  and a real `StateGraph` run in `examples/langgraph_store.py`.
+- A2A context exchange envelope: `contextos.integrations.a2a`
+  (`pip install -e ".[a2a]"`) -- `context_package_to_artifact()` and
+  `a2a_message_to_context_node()`, built on the official `a2a-sdk` protobuf types
+  rather than a hand-rolled approximation of the wire format. Verified against real
+  `a2a.types.Artifact`/`Message` objects and their actual JSON serialization via
+  `google.protobuf.json_format.MessageToDict` (camelCase field names, `Struct`-typed
+  metadata), not just Python-level assertions.
+- Framework-neutral evaluation suite: `contextos.evaluation` (`EvalCase`, `EvalResult`,
+  `EvalReport`, `run_eval_suite()`) scores `ContextOS.assemble()`'s precision/recall/f1/
+  latency against known-correct node ids per task. No optional extras needed. Test
+  cases use hand-computed expected metrics, not just "did it run" checks; this also
+  surfaced a real ranking finding (`examples/evaluation_suite.py`): `_rank()`'s
+  importance term has no minimum-relevance floor, so precision comes out below 1.0
+  even on off-topic tasks on small corpora -- now documented under "Known limitations"
+  rather than left to be discovered by a user.
 - MCP context server: `contextos.integrations.mcp_server.build_context_server()`
   (`pip install -e ".[mcp]"`) wraps any `ContextOS` instance as an MCP server exposing
   `ingest_context`/`search_context`/`assemble_context`/`link_context`/`move_context`/
