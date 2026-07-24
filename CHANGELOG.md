@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- MCP context server: `contextos.integrations.mcp_server.build_context_server()`
+  (`pip install -e ".[mcp]"`) wraps any `ContextOS` instance as an MCP server exposing
+  `ingest_context`/`search_context`/`assemble_context`/`link_context`/`move_context`/
+  `context_history` as tools, plus a `contextos-mcp` console script for a stdio server
+  over an in-memory store. Validated with a real MCP `ClientSession` connected over
+  in-memory streams (`mcp.shared.memory.create_connected_server_and_client_session`),
+  not by calling the wrapped Python functions directly -- actual protocol round trips,
+  including a real tool-level error path (invalid `memory_type` -> `isError=True`).
+
 - `SQLiteContextStore`: a stdlib-only, persisted `ContextStore`/`GraphStore`/`TierManager`/
   `AccessLog` implementation, a drop-in replacement for `InMemoryContextStore`.
 - Examples: LangGraph `StateGraph` integration, context persisting across process restarts,

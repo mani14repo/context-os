@@ -77,6 +77,13 @@ For OpenTelemetry tracing:
 pip install -e ".[otel]"
 ```
 
+For the MCP context server:
+
+```bash
+pip install -e ".[mcp]"
+contextos-mcp
+```
+
 ## Five-minute example
 
 ```python
@@ -121,6 +128,7 @@ asyncio.run(main())
 | `examples/s3_artifact_store.py` | Storing a node's original content in S3/MinIO and loading it back via `content_pointer` (needs `pip install -e ".[s3]"` and a running S3-compatible service) |
 | `examples/azure_blob_store.py` | Same, backed by Azure Blob Storage/Azurite (needs `pip install -e ".[azure-blob]"`) |
 | `examples/opentelemetry_tracing.py` | Real spans for `ingest()`/`assemble()`/`move()` printed to the console via the OpenTelemetry SDK (needs `pip install -e ".[otel]"`) |
+| `examples/mcp_server.py` | Calling `ingest_context`/`assemble_context` over a real MCP `ClientSession` round trip, not a direct Python call (needs `pip install -e ".[mcp]"`) |
 
 ## Core concepts
 
@@ -158,7 +166,8 @@ src/contextos/
 ├── compaction/simple.py     # Deterministic fallback compactor
 ├── orchestration/           # Retrieval, ranking, budget fitting
 ├── api/app.py               # Optional FastAPI service
-└── integrations/langgraph.py # LangGraph prompt-formatting helper
+├── integrations/langgraph.py # LangGraph prompt-formatting helper
+└── integrations/mcp_server.py # MCP tool server wrapping a ContextOS instance
 ```
 
 ## Extending ContextOS
@@ -246,6 +255,32 @@ SDK/exporter — see `examples/opentelemetry_tracing.py` for a runnable demo wit
 printed to the console, including the `contextos.item_count`/`contextos.token_count`
 attributes `assemble()` records.
 
+## MCP integration
+
+`contextos.integrations.mcp_server.build_context_server(context_os)` wraps any
+`ContextOS` instance as an MCP server (needs `pip install -e ".[mcp]"`), exposing
+`ingest_context`, `search_context`, `assemble_context`, `link_context`, `move_context`,
+and `context_history` as MCP tools — so any MCP client (Claude Desktop, another agent,
+an eval harness) can use ContextOS over the standard protocol instead of only from
+Python in the same process. `assemble_context` is the one worth reaching for first;
+the others exist so a client can also write and manage context, not just read it.
+
+```bash
+contextos-mcp   # runs an in-memory ContextOS over stdio
+```
+
+```python
+from contextos import ContextOS
+from contextos.integrations.mcp_server import build_context_server
+from contextos.storage.sqlite import SQLiteContextStore
+
+server = build_context_server(ContextOS(store=SQLiteContextStore("context.db")))
+server.run()  # stdio by default; see FastMCP.run() for sse/streamable-http
+```
+
+See `examples/mcp_server.py` for a runnable demo that connects a real `ClientSession`
+over in-memory streams and calls tools exactly as an external client would.
+
 ## Versioning, temporal validity, access logging, and tiering
 
 A few of the design principles from the architecture-decisions section are enforced,
@@ -292,6 +327,10 @@ Known gaps, tracked as GitHub issues:
   path (`bucket/tenant_id/key`), but nothing enforces that a caller can't construct a
   pointer for another tenant's key directly — access control at that boundary is an
   application concern, same as the reference ContextStores (see `SECURITY.md`).
+- The MCP context server takes `tenant_id` as a plain tool argument with no
+  authentication or per-connection scoping — any client that can call the server can
+  act as any tenant. Fine for local/single-tenant use; a real deployment needs an
+  authorization layer in front of it (see the 0.3 governance roadmap).
 
 ## Roadmap
 
@@ -332,7 +371,8 @@ Known gaps, tracked as GitHub issues:
 
 - [x] LangGraph example (`examples/langgraph_integration.py`) — a full checkpointer/store adapter is still open
 - [ ] LangGraph state and store adapter
-- [ ] MCP context server
+- [x] MCP context server (`contextos.integrations.mcp_server.build_context_server()`;
+      `contextos-mcp` CLI entry point; validated with a real MCP `ClientSession`)
 - [ ] A2A context exchange envelope
 - [ ] Framework-neutral evaluation suite
 
