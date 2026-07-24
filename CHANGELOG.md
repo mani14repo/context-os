@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `azure-blob` extra was missing `aiohttp`: `azure-storage-blob`'s async client needs
+  it to build its async transport but doesn't pull it in transitively, so
+  `AzureBlobArtifactStore` raised `ModuleNotFoundError: No module named 'aiohttp'` in
+  any environment where nothing else happened to install `aiohttp` first (this went
+  unnoticed locally because `aioboto3`, from the `s3` extra, pulls it in via
+  `aiobotocore` -- the CI `test-azure-blob` job installs `azure-blob` alone and caught
+  it). Added `aiohttp>=3.8,<4` to the `azure-blob` extra; reproduced the failure and
+  confirmed the fix in an isolated venv installing only `dev,azure-blob`, matching
+  exactly what CI installs. Also spot-checked every other extra (`postgres`, `redis`,
+  `s3`, `langgraph`, `otel`, `mcp`) the same way -- installed alone, in a fresh venv --
+  and found no other missing transitive dependencies.
+
 ### Added
 
 - MCP context server: `contextos.integrations.mcp_server.build_context_server()`
