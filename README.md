@@ -49,6 +49,20 @@ contextos-api
 
 Open `http://localhost:8080/docs` for the API explorer.
 
+For the persisted PostgreSQL + pgvector store:
+
+```bash
+pip install -e ".[postgres]"
+docker compose up postgres   # or any Postgres with the pgvector extension
+```
+
+For the Redis working-memory/cache layer:
+
+```bash
+pip install -e ".[redis]"
+docker compose up redis
+```
+
 ## Five-minute example
 
 ```python
@@ -88,6 +102,8 @@ asyncio.run(main())
 | `examples/sqlite_persistent_store.py` | Context surviving across process restarts with `SQLiteContextStore` |
 | `examples/replaceable_infrastructure.py` | Running identical code against the in-memory store, the SQLite store, and a custom `Compactor` |
 | `examples/progressive_retrieval.py` | The six-level compaction ladder, and `assemble()` automatically downgrading representations to fit a token budget |
+| `examples/postgres_pgvector_store.py` | Real vector similarity search via pgvector's cosine-distance operator, ranked by an `EmbeddingProvider` instead of lexical overlap (needs `pip install -e ".[postgres]"` and a running Postgres) |
+| `examples/redis_cache.py` | Wrapping any store with a Redis TTL cache for `get_node()`, with call counts showing cache hits vs. misses and invalidation on write (needs `pip install -e ".[redis]"` and a running Redis) |
 
 ## Core concepts
 
@@ -116,6 +132,9 @@ src/contextos/
 ├── library.py               # High-level facade
 ├── storage/memory.py        # In-memory reference implementation
 ├── storage/sqlite.py        # Stdlib-only persisted implementation
+├── storage/postgres.py      # PostgreSQL + pgvector persisted implementation
+├── storage/redis_cache.py   # Redis TTL cache wrapping any FullContextStore
+├── embeddings.py            # Dependency-free reference EmbeddingProvider
 ├── compaction/simple.py     # Deterministic fallback compactor
 ├── orchestration/           # Retrieval, ranking, budget fitting
 ├── api/app.py               # Optional FastAPI service
@@ -146,6 +165,39 @@ five protocols at once. See `CONTRIBUTING.md` for the expectation that new stora
 model providers implement these protocols rather than coupling the core package to a
 specific vendor.
 
+`PostgresContextStore` (`contextos.storage.postgres`, needs `pip install -e ".[postgres]"`)
+adds a sixth extension point, `EmbeddingProvider` (`contextos.protocols.EmbeddingProvider`):
+
+```python
+from contextos.storage.postgres import PostgresContextStore
+
+store = await PostgresContextStore.connect(
+    "postgresql://localhost/contextos",
+    embeddings=MyRealEmbeddingProvider(),  # implements EmbeddingProvider.embed(text) -> vector
+    dimensions=1536,                        # must match the provider's output size
+)
+```
+
+`contextos.embeddings.HashingEmbeddingProvider` is the dependency-free default (used in
+`examples/postgres_pgvector_store.py`) — see its docstring for exactly what it does and
+does not capture.
+
+`RedisCachedContextStore` (`contextos.storage.redis_cache`, needs `pip install -e ".[redis]"`)
+is a decorator, not a standalone backend: it wraps any store that implements all four
+storage protocols at once (`contextos.protocols.FullContextStore` — every built-in
+store does) and adds a Redis TTL cache in front of `get_node()`, invalidated on
+write/move/delete. This is the "working-memory/cache adapter" from the roadmap:
+
+```python
+import redis.asyncio as redis
+from contextos.storage.postgres import PostgresContextStore
+from contextos.storage.redis_cache import RedisCachedContextStore
+
+primary = await PostgresContextStore.connect(dsn, embeddings, dimensions=1536)
+store = RedisCachedContextStore(primary, redis.from_url("redis://localhost:6379/0"))
+os = ContextOS(store=store)  # graph/tier_manager/access_log still default to `store`
+```
+
 ## Versioning, temporal validity, access logging, and tiering
 
 A few of the design principles from the architecture-decisions section are enforced,
@@ -169,17 +221,21 @@ not just modeled:
 
 ## Known limitations
 
-The reference (`InMemoryContextStore`/`SQLiteContextStore`) implementations
-intentionally keep v0.1 small. Known gaps, tracked as GitHub issues:
+Known gaps, tracked as GitHub issues:
 
 - No ingestion pipeline: `ContextOS.ingest()` stores the `ContextNode` you hand it as-is —
-  there is no automatic classification, entity extraction, or embedding generation.
-- No vector/semantic search: `search()` uses lexical token overlap, not embeddings.
+  there is no automatic classification or entity extraction.
+- `InMemoryContextStore`/`SQLiteContextStore` rank by lexical token overlap, not
+  embeddings. `PostgresContextStore` ranks by real pgvector cosine distance, but its
+  default `HashingEmbeddingProvider` captures shared vocabulary, not meaning — plug in
+  a real embedding model via the same protocol for genuine semantic search.
 - No governance layer (authorization, retention rules, redaction) — see `SECURITY.md`.
 - No contradiction/supersession resolution: edges can be tagged `contradicts` or
   `supersedes`, but nothing acts on that yet.
 - `apply_tiering_policy()` processes at most 200 nodes per tenant per call (the
   `ContextQuery.max_results` ceiling); there's no pagination for larger tenants yet.
+- `PostgresContextStore`'s vector `dimensions` is fixed at table-creation time; changing
+  embedding providers/dimensions after data exists needs an explicit migration.
 
 ## Roadmap
 
@@ -198,11 +254,13 @@ intentionally keep v0.1 small. Known gaps, tracked as GitHub issues:
 ### 0.2 — Production adapters
 
 - [x] SQLite persisted store (stdlib-only, see `examples/sqlite_persistent_store.py`)
-- [ ] PostgreSQL + pgvector store
-- [ ] Redis working-memory/cache adapter
+- [x] PostgreSQL + pgvector store, with real vector similarity search
+- [x] Pluggable embedding providers (`EmbeddingProvider` protocol + dependency-free
+      reference implementation; reranking providers still open)
+- [x] Redis working-memory/cache adapter (`RedisCachedContextStore` — a TTL cache
+      decorator over any store, not a standalone backend; see `examples/redis_cache.py`)
 - [ ] S3/Azure Blob artifact adapter
 - [ ] OpenTelemetry traces
-- [ ] Pluggable embedding and reranking providers
 
 ### 0.3 — Governance
 

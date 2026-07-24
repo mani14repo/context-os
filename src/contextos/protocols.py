@@ -41,3 +41,14 @@ class Compactor(Protocol):
 class AccessLog(Protocol):
     async def record(self, tenant_id: str, node_id: UUID, agent: str, task: str) -> None: ...
     async def last_accessed(self, tenant_id: str, node_id: UUID) -> datetime | None: ...
+
+
+class EmbeddingProvider(Protocol):
+    async def embed(self, text: str) -> Sequence[float]: ...
+
+
+class FullContextStore(ContextStore, GraphStore, TierManager, AccessLog, Protocol):
+    """Convenience union of the four protocols a complete storage backend typically
+    implements together, as InMemoryContextStore, SQLiteContextStore, and
+    PostgresContextStore all do. Used to type wrappers/decorators (e.g.
+    RedisCachedContextStore) that need the full surface of an underlying store."""

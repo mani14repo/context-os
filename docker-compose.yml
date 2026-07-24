@@ -3,3 +3,14 @@ services:
     build: .
     ports:
       - "8080:8080"
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_PASSWORD: contextos
+      POSTGRES_DB: contextos
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

@@ -30,6 +30,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `active_workflow`/`retention_required` metadata flags.
 - `ContextOS` constructor now also accepts `access_log` as an independently swappable
   collaborator (alongside `store`, `graph`, `compactor`, `tier_manager`).
+- `PostgresContextStore` (`contextos.storage.postgres`, `pip install -e ".[postgres]"`):
+  a `ContextStore`/`GraphStore`/`TierManager`/`AccessLog` implementation backed by
+  PostgreSQL + pgvector, ranking search results by real cosine-distance vector
+  similarity instead of lexical overlap. Validated against a live `pgvector/pgvector`
+  container, not just unit-tested with fakes.
+- New `EmbeddingProvider` protocol and `contextos.embeddings.HashingEmbeddingProvider`,
+  a dependency-free deterministic reference implementation (captures lexical overlap,
+  not semantic meaning -- swap in a real model via the same protocol).
+- `contextos.search`: extracted `node_haystack()`/`passes_filters()` so all three
+  stores share identical filtering logic regardless of how each ranks relevance.
+- `examples/postgres_pgvector_store.py`; docker-compose and CI now include a Postgres
+  service for the adapter's test suite (`tests/test_postgres_store.py`, skipped
+  automatically when `asyncpg` isn't installed or no DSN is configured).
+- `RedisCachedContextStore` (`contextos.storage.redis_cache`, `pip install -e ".[redis]"`):
+  a TTL read-through cache decorator for `get_node()`, wrapping any store implementing
+  the new `FullContextStore` combined protocol. Invalidates on `put_node()`/`move()`/
+  `delete_node()`; `search()`/`neighbors()` pass straight through uncached. Validated
+  against a live Redis container, including TTL expiry and cache-hit counting, not
+  just asserted with fakes.
+- `contextos.protocols.FullContextStore`: a named union of `ContextStore`, `GraphStore`,
+  `TierManager`, and `AccessLog` for typing wrappers/decorators that need the full
+  surface (every built-in store already satisfies it).
+- `examples/redis_cache.py`; docker-compose and CI now include a Redis service for
+  the adapter's test suite (`tests/test_redis_cache.py`, skipped automatically when
+  `redis` isn't installed or no URL is configured).
 
 ## [0.1.0] - 2026-07-24
 
