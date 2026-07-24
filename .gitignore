@@ -19,3 +19,6 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+*.sqlite3
+*.db

@@ -79,7 +79,15 @@ async def main():
 asyncio.run(main())
 ```
 
-A complete graph example is available in `examples/basic.py`.
+## Examples
+
+| Script | Demonstrates |
+|---|---|
+| `examples/basic.py` | Ingest, link, and assemble against the in-memory reference store |
+| `examples/langgraph_integration.py` | Wiring `ContextOS.assemble()`/`ingest()` into a LangGraph `StateGraph` (needs `pip install -e ".[langgraph]"`) |
+| `examples/sqlite_persistent_store.py` | Context surviving across process restarts with `SQLiteContextStore` |
+| `examples/replaceable_infrastructure.py` | Running identical code against the in-memory store, the SQLite store, and a custom `Compactor` |
+| `examples/progressive_retrieval.py` | The six-level compaction ladder, and `assemble()` automatically downgrading representations to fit a token budget |
 
 ## Core concepts
 
@@ -106,11 +114,12 @@ src/contextos/
 ├── models.py                # Stable domain contracts
 ├── protocols.py             # Storage and graph extension points
 ├── library.py               # High-level facade
-├── storage/memory.py        # Reference implementation
+├── storage/memory.py        # In-memory reference implementation
+├── storage/sqlite.py        # Stdlib-only persisted implementation
 ├── compaction/simple.py     # Deterministic fallback compactor
 ├── orchestration/           # Retrieval, ranking, budget fitting
 ├── api/app.py               # Optional FastAPI service
-└── integrations/            # Runtime adapters belong here
+└── integrations/langgraph.py # LangGraph prompt-formatting helper
 ```
 
 ## Extending ContextOS
@@ -166,6 +175,7 @@ Known gaps, tracked as GitHub issues:
 
 ### 0.2 — Production adapters
 
+- [x] SQLite persisted store (stdlib-only, see `examples/sqlite_persistent_store.py`)
 - [ ] PostgreSQL + pgvector store
 - [ ] Redis working-memory/cache adapter
 - [ ] S3/Azure Blob artifact adapter
@@ -182,6 +192,7 @@ Known gaps, tracked as GitHub issues:
 
 ### 0.4 — Agent ecosystem
 
+- [x] LangGraph example (`examples/langgraph_integration.py`) — a full checkpointer/store adapter is still open
 - [ ] LangGraph state and store adapter
 - [ ] MCP context server
 - [ ] A2A context exchange envelope

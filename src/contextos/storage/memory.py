@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import math
 from collections import deque
 from collections.abc import Sequence
 from uuid import UUID
 
 from contextos.models import ContextEdge, ContextNode, ContextQuery, StorageTier, utcnow
-from contextos.text import tokenize
+from contextos.search import score_node
 
 
 class InMemoryContextStore:
@@ -50,26 +49,10 @@ class InMemoryContextStore:
         return edge
 
     async def search(self, query: ContextQuery) -> Sequence[ContextNode]:
-        query_terms = tokenize(query.query)
         scored: list[tuple[float, ContextNode]] = []
         for node in self.nodes.values():
-            if node.tenant_id != query.tenant_id:
-                continue
-            if query.memory_types and node.memory_type not in query.memory_types:
-                continue
-            if query.tiers and node.storage_tier not in query.tiers:
-                continue
-            if query.node_types and node.node_type not in query.node_types:
-                continue
-            if node.confidence < query.minimum_confidence:
-                continue
-            haystack = " ".join(filter(None, [node.title, node.summary, node.content]))
-            node_terms = tokenize(haystack)
-            overlap = len(query_terms & node_terms)
-            lexical = overlap / math.sqrt(max(1, len(query_terms) * len(node_terms)))
-            metadata_match = 0.2 if query.entity_ids and node.id in query.entity_ids else 0.0
-            score = lexical + metadata_match + node.importance * 0.05
-            if not query_terms or score > 0:
+            score = score_node(query, node)
+            if score is not None:
                 scored.append((score, node.model_copy(deep=True)))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [node for _, node in scored[: query.max_results]]
