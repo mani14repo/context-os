@@ -63,6 +63,20 @@ pip install -e ".[redis]"
 docker compose up redis
 ```
 
+For artifact storage (large/original content behind a `content_pointer`):
+
+```bash
+pip install -e ".[s3]"          # Amazon S3 or any S3-compatible service (MinIO, ...)
+pip install -e ".[azure-blob]"  # Azure Blob Storage (or the Azurite emulator)
+docker compose up minio azurite
+```
+
+For OpenTelemetry tracing:
+
+```bash
+pip install -e ".[otel]"
+```
+
 ## Five-minute example
 
 ```python
@@ -104,6 +118,9 @@ asyncio.run(main())
 | `examples/progressive_retrieval.py` | The six-level compaction ladder, and `assemble()` automatically downgrading representations to fit a token budget |
 | `examples/postgres_pgvector_store.py` | Real vector similarity search via pgvector's cosine-distance operator, ranked by an `EmbeddingProvider` instead of lexical overlap (needs `pip install -e ".[postgres]"` and a running Postgres) |
 | `examples/redis_cache.py` | Wrapping any store with a Redis TTL cache for `get_node()`, with call counts showing cache hits vs. misses and invalidation on write (needs `pip install -e ".[redis]"` and a running Redis) |
+| `examples/s3_artifact_store.py` | Storing a node's original content in S3/MinIO and loading it back via `content_pointer` (needs `pip install -e ".[s3]"` and a running S3-compatible service) |
+| `examples/azure_blob_store.py` | Same, backed by Azure Blob Storage/Azurite (needs `pip install -e ".[azure-blob]"`) |
+| `examples/opentelemetry_tracing.py` | Real spans for `ingest()`/`assemble()`/`move()` printed to the console via the OpenTelemetry SDK (needs `pip install -e ".[otel]"`) |
 
 ## Core concepts
 
@@ -134,7 +151,10 @@ src/contextos/
 ├── storage/sqlite.py        # Stdlib-only persisted implementation
 ├── storage/postgres.py      # PostgreSQL + pgvector persisted implementation
 ├── storage/redis_cache.py   # Redis TTL cache wrapping any FullContextStore
+├── storage/s3_artifacts.py  # ArtifactStore backed by S3 or S3-compatible services
+├── storage/azure_artifacts.py # ArtifactStore backed by Azure Blob Storage
 ├── embeddings.py            # Dependency-free reference EmbeddingProvider
+├── tracing.py                # No-op-safe OpenTelemetry span helper
 ├── compaction/simple.py     # Deterministic fallback compactor
 ├── orchestration/           # Retrieval, ranking, budget fitting
 ├── api/app.py               # Optional FastAPI service
@@ -198,6 +218,23 @@ store = RedisCachedContextStore(primary, redis.from_url("redis://localhost:6379/
 os = ContextOS(store=store)  # graph/tier_manager/access_log still default to `store`
 ```
 
+`ContextOS(artifacts=...)` accepts a seventh, independent collaborator implementing
+`contextos.protocols.ArtifactStore` (`S3ArtifactStore`, needs `pip install -e ".[s3]"`;
+`AzureBlobArtifactStore`, needs `pip install -e ".[azure-blob]"`) for the "graph-content
+separation" principle: `ContextOS.store_artifact()`/`load_artifact()` write/read large
+original content and give you back a pointer for `ContextNode.content_pointer`. Unlike
+the other five collaborators, there's no in-process fallback — it stays `None` unless
+you configure one, since `InMemoryContextStore`/`SQLiteContextStore` don't implement it.
+
+## Observability
+
+`contextos.tracing.start_span()` wraps `ingest()`, `link()`, `compact()`, `move()`,
+`apply_tiering_policy()`, and `assemble()`. It's called unconditionally from core code
+but does nothing unless you `pip install -e ".[otel]"` and configure an OpenTelemetry
+SDK/exporter — see `examples/opentelemetry_tracing.py` for a runnable demo with spans
+printed to the console, including the `contextos.item_count`/`contextos.token_count`
+attributes `assemble()` records.
+
 ## Versioning, temporal validity, access logging, and tiering
 
 A few of the design principles from the architecture-decisions section are enforced,
@@ -236,6 +273,10 @@ Known gaps, tracked as GitHub issues:
   `ContextQuery.max_results` ceiling); there's no pagination for larger tenants yet.
 - `PostgresContextStore`'s vector `dimensions` is fixed at table-creation time; changing
   embedding providers/dimensions after data exists needs an explicit migration.
+- `S3ArtifactStore`/`AzureBlobArtifactStore` namespace pointers by tenant_id in the key
+  path (`bucket/tenant_id/key`), but nothing enforces that a caller can't construct a
+  pointer for another tenant's key directly — access control at that boundary is an
+  application concern, same as the reference ContextStores (see `SECURITY.md`).
 
 ## Roadmap
 
@@ -259,8 +300,10 @@ Known gaps, tracked as GitHub issues:
       reference implementation; reranking providers still open)
 - [x] Redis working-memory/cache adapter (`RedisCachedContextStore` — a TTL cache
       decorator over any store, not a standalone backend; see `examples/redis_cache.py`)
-- [ ] S3/Azure Blob artifact adapter
-- [ ] OpenTelemetry traces
+- [x] S3/Azure Blob artifact adapter (`S3ArtifactStore`/`AzureBlobArtifactStore`,
+      `ArtifactStore` protocol; validated against MinIO and Azurite)
+- [x] OpenTelemetry traces (`contextos.tracing.start_span()`; no-op unless the SDK is
+      configured, wraps ingest/link/compact/move/apply_tiering_policy/assemble)
 
 ### 0.3 — Governance
 

@@ -16,6 +16,7 @@ from contextos.models import (
 )
 from contextos.protocols import AccessLog, Compactor, ContextStore, GraphStore
 from contextos.text import tokenize
+from contextos.tracing import start_span
 
 _HOT_WARM = frozenset({StorageTier.HOT, StorageTier.WARM})
 
@@ -34,34 +35,42 @@ class ContextOrchestrator:
         self.access_log = access_log
 
     async def assemble(self, request: ContextRequest) -> ContextPackage:
-        query = ContextQuery(
+        with start_span(
+            "contextos.assemble",
             tenant_id=request.tenant_id,
-            query=request.task,
-            memory_types=request.memory_scopes,
-            tiers=_HOT_WARM,
-            max_results=30,
-            minimum_confidence=request.minimum_confidence,
-            graph_depth=request.graph_depth,
-        )
-        direct = list(await self.store.search(query))
-        if not direct:
-            # Nothing in hot/warm tiers matched; widen to cold/archive before giving up.
-            fallback_query = query.model_copy(update={"tiers": set()})
-            direct = list(await self.store.search(fallback_query))
-        related = list(
-            await self.graph.neighbors(
-                request.tenant_id, [node.id for node in direct[:5]], request.graph_depth
+            agent=request.agent,
+            token_budget=request.token_budget,
+        ) as span:
+            query = ContextQuery(
+                tenant_id=request.tenant_id,
+                query=request.task,
+                memory_types=request.memory_scopes,
+                tiers=_HOT_WARM,
+                max_results=30,
+                minimum_confidence=request.minimum_confidence,
+                graph_depth=request.graph_depth,
             )
-        )
-        direct_ids = {node.id for node in direct}
-        candidates = self._dedupe([*direct, *related])
-        ranked = self._rank(candidates, request.task, direct_ids)
-        selected, token_count = await self._fit_budget(ranked, request.token_budget)
-        if self.access_log is not None:
-            for item in selected:
-                await self.access_log.record(
-                    request.tenant_id, item.node.id, request.agent, request.task
+            direct = list(await self.store.search(query))
+            if not direct:
+                # Nothing in hot/warm tiers matched; widen to cold/archive before giving up.
+                fallback_query = query.model_copy(update={"tiers": set()})
+                direct = list(await self.store.search(fallback_query))
+            related = list(
+                await self.graph.neighbors(
+                    request.tenant_id, [node.id for node in direct[:5]], request.graph_depth
                 )
+            )
+            direct_ids = {node.id for node in direct}
+            candidates = self._dedupe([*direct, *related])
+            ranked = self._rank(candidates, request.task, direct_ids)
+            selected, token_count = await self._fit_budget(ranked, request.token_budget)
+            if self.access_log is not None:
+                for item in selected:
+                    await self.access_log.record(
+                        request.tenant_id, item.node.id, request.agent, request.task
+                    )
+            span.set_attribute("contextos.item_count", len(selected))
+            span.set_attribute("contextos.token_count", token_count)
         return ContextPackage(
             request=request,
             items=selected,

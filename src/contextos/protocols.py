@@ -52,3 +52,16 @@ class FullContextStore(ContextStore, GraphStore, TierManager, AccessLog, Protoco
     implements together, as InMemoryContextStore, SQLiteContextStore, and
     PostgresContextStore all do. Used to type wrappers/decorators (e.g.
     RedisCachedContextStore) that need the full surface of an underlying store."""
+
+
+class ArtifactStore(Protocol):
+    """Object storage for the large/original content a ContextNode.content_pointer
+    refers to -- the "graph-content separation" design principle: nodes carry
+    pointers, large artifacts live in a blob store, not in the node's `content` field.
+    `put()` returns an opaque pointer string that `get()`/`delete()` accept back."""
+
+    async def put(
+        self, tenant_id: str, key: str, data: bytes, content_type: str | None = None
+    ) -> str: ...
+    async def get(self, pointer: str) -> bytes: ...
+    async def delete(self, pointer: str) -> bool: ...

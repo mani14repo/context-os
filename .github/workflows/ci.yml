@@ -61,3 +61,44 @@ jobs:
       - run: pytest -q tests/test_redis_cache.py
         env:
           CONTEXTOS_TEST_REDIS_URL: redis://localhost:6379/0
+
+  test-s3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && break
+            sleep 1
+          done
+      - run: pip install -e ".[dev,s3]"
+      - run: pytest -q tests/test_s3_artifacts.py
+        env:
+          CONTEXTOS_TEST_S3_ENDPOINT: http://localhost:9000
+          CONTEXTOS_TEST_S3_ACCESS_KEY: minioadmin
+          CONTEXTOS_TEST_S3_SECRET_KEY: minioadmin
+
+  test-azure-blob:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start Azurite
+        run: |
+          docker run -d --name azurite -p 10000:10000 mcr.microsoft.com/azure-storage/azurite \
+            azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+          sleep 5
+      - run: pip install -e ".[dev,azure-blob]"
+      - run: pytest -q tests/test_azure_blob.py
+        env:
+          CONTEXTOS_TEST_AZURE_CONNECTION_STRING: >-
+            DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;

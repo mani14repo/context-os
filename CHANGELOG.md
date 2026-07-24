@@ -55,6 +55,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `examples/redis_cache.py`; docker-compose and CI now include a Redis service for
   the adapter's test suite (`tests/test_redis_cache.py`, skipped automatically when
   `redis` isn't installed or no URL is configured).
+- New `ArtifactStore` protocol (`put`/`get`/`delete`), plus `S3ArtifactStore`
+  (`contextos.storage.s3_artifacts`, `pip install -e ".[s3]"`, via `aioboto3` -- works
+  against Amazon S3 or any S3-compatible service such as MinIO) and
+  `AzureBlobArtifactStore` (`contextos.storage.azure_artifacts`,
+  `pip install -e ".[azure-blob]"`, via `azure-storage-blob` -- works against Azure
+  Blob Storage or the Azurite emulator). This is the "graph-content separation"
+  design principle made real: `ContextOS.store_artifact()`/`load_artifact()` write/read
+  large original content and hand back a pointer for `ContextNode.content_pointer`.
+  Validated against live MinIO and Azurite containers, including a real Azurite
+  compatibility issue (`--skipApiVersionCheck` needed against recent SDK releases) hit
+  and fixed during that validation, not just documented from a changelog somewhere.
+- `contextos.tracing.start_span()`: a no-op-safe OpenTelemetry span helper, wrapping
+  `ContextOS.ingest()`/`link()`/`compact()`/`move()`/`apply_tiering_policy()` and
+  `ContextOrchestrator.assemble()`. Does nothing unless the new `otel` extra
+  (`opentelemetry-api`/`opentelemetry-sdk`) is installed and the application configures
+  an SDK/exporter -- verified with a real `TracerProvider` + `ConsoleSpanExporter` in
+  `examples/opentelemetry_tracing.py`, not just by inspecting the no-op path.
+- `ContextOS` constructor now also accepts `artifacts` (no in-process default, unlike
+  the other five collaborators -- `InMemoryContextStore`/`SQLiteContextStore` don't
+  implement `ArtifactStore`).
+- Verified the core package (`pip install -e .`, no extras) still imports and passes
+  its full test suite with zero optional dependencies installed -- the six adapters
+  added across this release are genuinely optional, not soft-required.
 
 ## [0.1.0] - 2026-07-24
 
