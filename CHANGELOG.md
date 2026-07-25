@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `tests/test_github_issues_extractor.py` imported `httpx` before the module's
+  `pytest.importorskip("httpx")` guard, so the main `test` CI job (which only
+  installs `dev`) hard-failed at collection instead of skipping the file, unlike
+  every other optional-dependency test in the suite. Moved the import below the
+  guard to match the established convention. While investigating, found the same
+  "silently skips forever" gap fixed earlier for langgraph/mcp/a2a now applied to
+  three more files: `test_api_extractor.py` and `test_github_issues_extractor.py`
+  (need `http`) and `test_document_extractor.py` (need `documents`) were not
+  installed+run in any CI job. Extended `test-integrations` to install
+  `http,documents` alongside `langgraph,mcp,a2a` and run all six files together
+  (verified no dependency conflicts). Also added `test_database_extractor.py` to
+  the `test-postgres` job, which already runs a live Postgres service it can
+  reuse but wasn't invoking that test file at all.
 - `azure-blob` extra was missing `aiohttp`: `azure-storage-blob`'s async client needs
   it to build its async transport but doesn't pull it in transitively, so
   `AzureBlobArtifactStore` raised `ModuleNotFoundError: No module named 'aiohttp'` in

@@ -1,7 +1,8 @@
-import httpx
 import pytest
 
 pytest.importorskip("httpx")
+
+import httpx
 
 from contextos.ingestion.github_issues import GitHubIssuesExtractor
 

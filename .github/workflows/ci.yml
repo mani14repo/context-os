@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev,postgres]"
-      - run: pytest -q tests/test_postgres_store.py
+      - run: pytest -q tests/test_postgres_store.py tests/test_database_extractor.py
         env:
           CONTEXTOS_TEST_POSTGRES_DSN: postgresql://postgres:contextos@localhost:5432/contextos
 
@@ -86,18 +86,22 @@ jobs:
           CONTEXTOS_TEST_S3_SECRET_KEY: minioadmin
 
   test-integrations:
-    # langgraph/mcp/a2a need no external service (unlike postgres/redis/s3/azure-blob
-    # above) -- but they still need their own job, not the main `test` job, since
-    # `test` only installs the `dev` extra and these tests would otherwise just skip
-    # silently via pytest.importorskip instead of actually running in CI.
+    # langgraph/mcp/a2a/http/documents need no Docker service (unlike postgres/redis/
+    # s3/azure-blob/kafka/mattermost above) -- http needs real internet access to the
+    # public GitHub API, which GitHub Actions runners have by default. All of these
+    # still need their own job, not the main `test` job, since `test` only installs
+    # the `dev` extra and these tests would otherwise just skip silently via
+    # pytest.importorskip instead of actually running in CI.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,langgraph,mcp,a2a]"
-      - run: pytest -q tests/test_langgraph_store.py tests/test_mcp_server.py tests/test_a2a_envelope.py
+      - run: pip install -e ".[dev,langgraph,mcp,a2a,http,documents]"
+      - run: |
+          pytest -q tests/test_langgraph_store.py tests/test_mcp_server.py tests/test_a2a_envelope.py \
+            tests/test_api_extractor.py tests/test_document_extractor.py tests/test_github_issues_extractor.py
 
   test-kafka:
     runs-on: ubuntu-latest
