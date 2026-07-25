@@ -19,6 +19,7 @@ from contextos.protocols import (
     ArtifactStore,
     Compactor,
     ContextStore,
+    Extractor,
     GraphStore,
     Redactor,
     TierManager,
@@ -87,6 +88,24 @@ class ContextOS:
         """Every edge touching this node, in either direction. Used by
         contextos.workflows to find `contradicts`/`supersedes` relationships."""
         return list(await self.graph.edges_for_node(tenant_id, node_id))
+
+    async def ingest_source(self, extractor: Extractor, tenant_id: str) -> list[ContextNode]:
+        """Run an Extractor against its configured source and ingest() every
+        ContextNode it produces. This is the ingestion-pipeline entry point: a
+        DocumentExtractor(path), APIExtractor(url), DatabaseExtractor(dsn, query),
+        KafkaEventExtractor(topic), MattermostExtractor(channel), MediaExtractor(...),
+        or GitHubIssuesExtractor(repo) (see contextos.ingestion) each turn their
+        specific source into ContextNodes; this method is the same one line
+        regardless of which one you're using. Nodes are ingested in the order the
+        extractor returns them, sequentially -- an Extractor that needs bulk/parallel
+        writes should call context_os.ingest() directly instead."""
+        with start_span(
+            "contextos.ingest_source", tenant_id=tenant_id, extractor=type(extractor).__name__
+        ) as span:
+            extracted = await extractor.extract(tenant_id=tenant_id)
+            ingested = [await self.ingest(node) for node in extracted]
+            span.set_attribute("contextos.ingested_count", len(ingested))
+        return ingested
 
     async def redact(self, content: str) -> str:
         """Apply the configured Redactor (default: contextos.redaction.RegexRedactor,

@@ -29,3 +29,18 @@ services:
     command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
     ports:
       - "10000:10000"
+  kafka:
+    # Official Apache image, single-node KRaft mode (no separate Zookeeper needed).
+    # Default config advertises PLAINTEXT://localhost:9092, so the host port must
+    # stay 9092:9092 -- remapping it needs KAFKA_ADVERTISED_LISTENERS overridden too.
+    image: apache/kafka:3.8.0
+    ports:
+      - "9092:9092"
+  mattermost:
+    image: mattermost/mattermost-team-edition:9.11
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: sqlite3
+      MM_SQLSETTINGS_DATASOURCE: /mattermost/data/mattermost.db
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+    ports:
+      - "8065:8065"

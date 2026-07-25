@@ -48,6 +48,18 @@ class EmbeddingProvider(Protocol):
     async def embed(self, text: str) -> Sequence[float]: ...
 
 
+class Extractor(Protocol):
+    """Pulls raw content from a specific external source and turns it into
+    ContextNodes ready for ContextOS.ingest(). Each concrete Extractor owns its own
+    source-specific configuration (a file path, a URL, a DB query, a topic, a
+    channel, a repo) via its constructor -- extract() itself takes only the tenant_id
+    every ingested node needs. See contextos.ingestion for reference implementations
+    (documents, generic JSON APIs, SQL databases, Kafka, Mattermost, blob storage,
+    GitHub Issues) and ContextOS.ingest_source() for the facade entry point."""
+
+    async def extract(self, *, tenant_id: str) -> Sequence[ContextNode]: ...
+
+
 class FullContextStore(ContextStore, GraphStore, TierManager, AccessLog, Protocol):
     """Convenience union of the four protocols a complete storage backend typically
     implements together, as InMemoryContextStore, SQLiteContextStore, and

@@ -30,6 +30,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Ingestion pipeline (0.5 roadmap): `contextos.protocols.Extractor` (`async
+  extract(self, *, tenant_id) -> Sequence[ContextNode]`) plus
+  `ContextOS.ingest_source(extractor, tenant_id)` as the common entry point, and
+  seven reference `Extractor` implementations under `contextos.ingestion`, each
+  validated against real infrastructure rather than fakes:
+  - `documents.DocumentExtractor` (`pip install -e ".[documents]"`, pypdf +
+    python-docx): PDF/DOCX/text/markdown files, chunked into paragraph-grouped
+    ContextNodes. Tested against a real hand-built PDF (a minimal valid PDF
+    constructed byte-for-byte, exercising pypdf's actual parser) and a real
+    python-docx-written file.
+  - `api.APIExtractor` (`pip install -e ".[http]"`, httpx): generic JSON/REST
+    endpoints, with a `records_path` for nested lists and configurable
+    `content_field`/`title_field`/`id_field` mapping. Tested against a real local
+    HTTP server (stdlib `http.server`), not a mocked transport.
+  - `database.DatabaseExtractor` (reuses `asyncpg` from the `postgres` extra): SQL
+    query results, mapped via the same field-mapping helper as `APIExtractor`
+    (`contextos.ingestion._mapping.record_to_node`, since a JSON object and a SQL
+    row are both structurally "a flat record with named fields"). Tested against a
+    live Postgres container.
+  - `kafka_stream.KafkaEventExtractor` (`pip install -e ".[kafka]"`, aiokafka): a
+    bounded pull from a Kafka topic (reads up to `max_messages` or until
+    `timeout_seconds` elapses), with JSON or raw-text message bodies. Tested
+    against a live single-node KRaft Kafka broker (`apache/kafka:3.8.0`); new
+    `test-kafka` CI job and `docker-compose.yml` service.
+  - `mattermost.MattermostExtractor` (`pip install -e ".[mattermost]"`, httpx):
+    channel messages via Mattermost's REST API, with system messages (joins,
+    leaves) filtered out by their non-empty `type` field. Mattermost, not a
+    proprietary SaaS product, was chosen specifically because it's self-hostable
+    and testable against a real live server the same way every other connector is.
+    Tested against a real self-hosted Mattermost 9.11 server (Postgres-backed --
+    9.x dropped SQLite support) with a full REST bootstrap (create admin, log in,
+    create team/channel, post messages, then extract); new `test-mattermost` CI
+    job and `docker-compose.yml` service.
+  - `media.MediaExtractor` (works with any `ArtifactStore`): binary files stored
+    via `S3ArtifactStore`/`AzureBlobArtifactStore`, returning a ContextNode with
+    only a `content_pointer` plus filename/size/content-type metadata -- no OCR or
+    transcription. Tested against a live MinIO container, including a full
+    store-then-retrieve byte-for-byte round trip.
+  - `github_issues.GitHubIssuesExtractor` (reuses `httpx`): issues from a GitHub
+    repository via the public REST API, with pull requests filtered out (GitHub's
+    `/issues` endpoint returns both). Tested against the real public GitHub API
+    (`octocat/Hello-World`, GitHub's own long-standing API-demo repository), not a
+    mock -- including a real 404 error path against a nonexistent repo.
+  - Examples: `examples/ingest_documents.py`, `ingest_api.py`, `ingest_database.py`,
+    `ingest_kafka.py`, `ingest_mattermost.py`, `ingest_media.py`,
+    `ingest_github_issues.py`.
 - Governance primitives (0.3 roadmap, minus authorization/ABAC, which is still open):
   - Retention and legal hold: `ContextNode.retention_until`/`legal_hold` fields, new
     `LegalHoldError` (`contextos.errors`), `ContextOS.apply_retention_policy(tenant_id)`

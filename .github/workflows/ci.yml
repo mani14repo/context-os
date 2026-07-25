@@ -99,6 +99,61 @@ jobs:
       - run: pip install -e ".[dev,langgraph,mcp,a2a]"
       - run: pytest -q tests/test_langgraph_store.py tests/test_mcp_server.py tests/test_a2a_envelope.py
 
+  test-kafka:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start Kafka
+        run: |
+          docker run -d --name kafka -p 9092:9092 apache/kafka:3.8.0
+          for i in $(seq 1 30); do
+            docker logs kafka 2>&1 | grep -q "Kafka Server started" && break
+            sleep 2
+          done
+      - run: pip install -e ".[dev,kafka]"
+      - run: pytest -q tests/test_kafka_extractor.py
+        env:
+          CONTEXTOS_TEST_KAFKA_BOOTSTRAP: localhost:9092
+
+  test-mattermost:
+    runs-on: ubuntu-latest
+    services:
+      postgres-mm:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mmuser
+          POSTGRES_PASSWORD: mmpass
+          POSTGRES_DB: mattermost
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mmuser"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start Mattermost
+        run: |
+          docker run -d --name mattermost --network host \
+            -e MM_SQLSETTINGS_DRIVERNAME=postgres \
+            -e MM_SQLSETTINGS_DATASOURCE="postgres://mmuser:mmpass@localhost:5432/mattermost?sslmode=disable" \
+            mattermost/mattermost-team-edition:9.11
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8065/api/v4/system/ping && break
+            sleep 3
+          done
+      - run: pip install -e ".[dev,mattermost]"
+      - run: pytest -q tests/test_mattermost_extractor.py
+        env:
+          CONTEXTOS_TEST_MATTERMOST_URL: http://localhost:8065
+
   test-azure-blob:
     runs-on: ubuntu-latest
     steps:

@@ -14,7 +14,8 @@ It provides a small set of composable primitives for:
 - progressive context compaction;
 - task-specific, token-budgeted context assembly;
 - multi-tenant isolation and provenance;
-- integration with LangGraph, MCP, A2A, or custom agent runtimes.
+- integration with LangGraph, MCP, A2A, or custom agent runtimes;
+- an ingestion pipeline connecting documents, APIs, databases, event streams, chat, blob storage, and GitHub Issues.
 
 > Status: alpha. The included in-memory implementation is usable for prototypes and tests. Production storage adapters are intentionally separate extension points.
 
@@ -92,6 +93,17 @@ pip install -e ".[langgraph]"
 pip install -e ".[a2a]"
 ```
 
+For the ingestion pipeline (see "Ingestion pipeline" below for which extra backs which source):
+
+```bash
+pip install -e ".[documents]"    # PDF/DOCX/text/markdown files
+pip install -e ".[http]"         # generic JSON/REST APIs and GitHub Issues
+pip install -e ".[postgres]"     # SQL databases (reuses the same asyncpg driver)
+pip install -e ".[kafka]"        # Kafka event streams
+pip install -e ".[mattermost]"   # Mattermost chat messages
+pip install -e ".[s3]"           # or "[azure-blob]" -- binary files/media
+```
+
 ## Five-minute example
 
 ```python
@@ -143,6 +155,13 @@ asyncio.run(main())
 | `examples/retention_and_legal_hold.py` | `apply_retention_policy()` sweeping expired nodes while `legal_hold` blocks deletion (`delete()` raises `LegalHoldError`, not a silent no-op) |
 | `examples/redaction_and_classification.py` | `classification` as a label plus `redact()` as an explicit, callable data transformation -- not access control |
 | `examples/provenance_and_workflows.py` | `supersede()`/`contradictions_for()` built on existing edges and temporal validity, plus a hash-chained provenance manifest that detects a direct (bypassing ContextOS) store mutation |
+| `examples/ingest_documents.py` | `DocumentExtractor` chunking a real markdown file into several ContextNodes via `ingest_source()` (needs `pip install -e ".[documents]"`) |
+| `examples/ingest_api.py` | `APIExtractor` mapping JSON records from a REST endpoint to ContextNodes, against a real local HTTP server (needs `pip install -e ".[http]"`) |
+| `examples/ingest_database.py` | `DatabaseExtractor` mapping SQL query rows to ContextNodes (needs `pip install -e ".[postgres]"` and a running Postgres) |
+| `examples/ingest_kafka.py` | `KafkaEventExtractor` doing a bounded pull of real Kafka messages into ContextNodes (needs `pip install -e ".[kafka]"` and a running Kafka broker) |
+| `examples/ingest_mattermost.py` | `MattermostExtractor` pulling real channel messages via the REST API, including bootstrapping a team/channel (needs `pip install -e ".[mattermost]"` and a running Mattermost server) |
+| `examples/ingest_media.py` | `MediaExtractor` storing a binary file via `ArtifactStore` and returning a `content_pointer`-only ContextNode, round-tripped through `load_artifact()` (needs `pip install -e ".[s3]"` and a running S3-compatible service) |
+| `examples/ingest_github_issues.py` | `GitHubIssuesExtractor` pulling real issues from `octocat/Hello-World` over the public GitHub API, filtering out pull requests (needs `pip install -e ".[http]"`) |
 
 ## Core concepts
 
@@ -185,6 +204,13 @@ src/contextos/
 ├── retention.py              # Retention-eligibility decision function
 ├── workflows.py              # supersede() / contradictions_for()
 ├── provenance.py             # Hash-chained provenance manifests
+├── ingestion/documents.py    # PDF/DOCX/text/markdown -> ContextNodes
+├── ingestion/api.py          # Generic JSON/REST -> ContextNodes
+├── ingestion/database.py     # SQL query rows -> ContextNodes
+├── ingestion/kafka_stream.py # Kafka messages -> ContextNodes
+├── ingestion/mattermost.py   # Mattermost channel posts -> ContextNodes
+├── ingestion/media.py        # Binary files -> ArtifactStore-backed ContextNodes
+├── ingestion/github_issues.py # GitHub Issues -> ContextNodes
 ├── api/app.py               # Optional FastAPI service
 ├── integrations/langgraph.py # LangGraph prompt-formatting helper + BaseStore adapter
 ├── integrations/mcp_server.py # MCP tool server wrapping a ContextOS instance
@@ -267,6 +293,13 @@ separation" principle: `ContextOS.store_artifact()`/`load_artifact()` write/read
 original content and give you back a pointer for `ContextNode.content_pointer`. Unlike
 the other five collaborators, there's no in-process fallback — it stays `None` unless
 you configure one, since `InMemoryContextStore`/`SQLiteContextStore` don't implement it.
+
+`contextos.protocols.Extractor` is the ingestion-side extension point: `async
+extract(self, *, tenant_id) -> Sequence[ContextNode]`. Unlike the constructor-level
+collaborators above, an `Extractor` isn't attached to `ContextOS` itself — you
+construct one with its own source-specific config (a path, a URL, a DSN, a topic)
+and hand it to `ContextOS.ingest_source(extractor, tenant_id)`. See "Ingestion
+pipeline" below for the seven reference implementations in `contextos.ingestion`.
 
 ## Observability
 
@@ -439,12 +472,74 @@ store write), which is exactly the tamper scenario a manifest exists to catch.
 See `examples/retention_and_legal_hold.py`, `examples/redaction_and_classification.py`,
 and `examples/provenance_and_workflows.py` for runnable end-to-end demos of all four.
 
+## Ingestion pipeline
+
+`ContextOS.ingest()` on its own just stores the `ContextNode` you hand it -- no
+extraction, no classification. `contextos.ingestion` closes that gap with seven
+`Extractor` implementations, each turning a specific external source into
+ContextNodes, plus one facade method that's the same regardless of which one
+you're using:
+
+```python
+from contextos import ContextOS
+from contextos.ingestion.documents import DocumentExtractor
+
+context_os = ContextOS()
+nodes = await context_os.ingest_source(DocumentExtractor("runbook.pdf"), tenant_id="acme")
+```
+
+| Extractor | Source | Extra |
+|---|---|---|
+| `contextos.ingestion.documents.DocumentExtractor` | PDF, DOCX, text/markdown files, chunked into paragraph-grouped ContextNodes | `documents` |
+| `contextos.ingestion.api.APIExtractor` | Generic JSON/REST endpoints, with configurable field mapping and a `records_path` for nested lists | `http` |
+| `contextos.ingestion.database.DatabaseExtractor` | SQL query results against PostgreSQL, mapped with the same field-mapping approach as `APIExtractor` | `postgres` |
+| `contextos.ingestion.kafka_stream.KafkaEventExtractor` | A bounded pull (not a running consumer) from a Kafka topic; call it repeatedly for continuous ingestion | `kafka` |
+| `contextos.ingestion.mattermost.MattermostExtractor` | Channel messages via Mattermost's REST API, with system messages (joins/leaves) filtered out | `mattermost` |
+| `contextos.ingestion.media.MediaExtractor` | Binary files (images, audio, video) stored via `ArtifactStore`, node carries only a `content_pointer` -- no OCR or transcription | `s3` or `azure-blob` |
+| `contextos.ingestion.github_issues.GitHubIssuesExtractor` | Issues from a GitHub repository via the public REST API, with pull requests filtered out | `http` |
+
+`APIExtractor` and `DatabaseExtractor` share a mapping helper
+(`contextos.ingestion._mapping.record_to_node`) because a JSON API response and a
+SQL row are both, structurally, "a flat record with named fields" -- the same
+`content_field`/`title_field`/`id_field` configuration works for either.
+`MattermostExtractor` and `GitHubIssuesExtractor` have fixed source schemas
+instead (a chat post, an issue), so they build `ContextNode`s directly rather than
+going through that mapping layer.
+
+Every extractor is validated against real infrastructure, not fakes: a hand-built
+PDF/DOCX for documents, a real local HTTP server for the API extractor, a live
+Postgres container for the database extractor, a live Kafka broker for the event
+extractor, a live self-hosted Mattermost server for the chat extractor, a live
+MinIO container for the media extractor, and the real public GitHub API for the
+issues extractor. See `examples/ingest_documents.py`, `ingest_api.py`,
+`ingest_database.py`, `ingest_kafka.py`, `ingest_mattermost.py`, `ingest_media.py`,
+and `ingest_github_issues.py` for runnable demos of each.
+
 ## Known limitations
 
 Known gaps, tracked as GitHub issues:
 
-- No ingestion pipeline: `ContextOS.ingest()` stores the `ContextNode` you hand it as-is —
-  there is no automatic classification or entity extraction.
+- `ContextOS.ingest()` itself still stores the `ContextNode` you hand it as-is with no
+  automatic classification -- `contextos.ingestion`'s Extractors add structure (title,
+  content, node_type, metadata) on the way in, but none of them infer `classification`
+  or `importance` from content; those stay at their field defaults unless the caller
+  sets them explicitly.
+- `DocumentExtractor`'s PDF/DOCX text extraction is only as good as `pypdf`/`python-docx`'s
+  layout handling -- scanned/image-only PDFs (no embedded text layer) yield empty
+  content, since there's no OCR step.
+- `KafkaEventExtractor.extract()` is a bounded pull (reads up to `max_messages` or
+  until `timeout_seconds` elapses, then returns), not a running consumer -- for
+  continuous ingestion, call it repeatedly rather than expecting it to block forever.
+- `MattermostExtractor` needs a session token you already have (from logging in via
+  Mattermost's own `/users/login` endpoint or a bot account); it doesn't manage
+  authentication itself.
+- `MediaExtractor` does no content extraction at all (no OCR, no audio transcription) --
+  binary content is stored via `ArtifactStore` and the node carries only a
+  `content_pointer` plus filename/size/content-type metadata.
+- `APIExtractor`/`DatabaseExtractor` assume each record maps to exactly one
+  ContextNode via flat field names (`content_field`/`title_field`/`id_field`); nested
+  or list-valued fields land in `content` as their raw `str()`/JSON form, not expanded
+  into separate nodes.
 - `SimpleCompactor` is deterministic sentence-count truncation with no reflection or
   iterative refinement — see the `Compactor` note under "Extending ContextOS" for how a
   more elaborate custom `Compactor` would fit, and why an evolving curated artifact
@@ -534,6 +629,17 @@ Known gaps, tracked as GitHub issues:
       `a2a-sdk` protobuf types; verified against the real JSON wire format)
 - [x] Framework-neutral evaluation suite (`contextos.evaluation.run_eval_suite()` --
       precision/recall/f1/latency against `assemble()`, no optional extras needed)
+
+### 0.5 — Ingestion pipeline
+
+- [x] `Extractor` protocol + `ContextOS.ingest_source()` facade
+- [x] Documents: PDF/DOCX/text/markdown (`contextos.ingestion.documents.DocumentExtractor`)
+- [x] APIs: generic JSON/REST with configurable field mapping (`contextos.ingestion.api.APIExtractor`)
+- [x] Databases: SQL query results (`contextos.ingestion.database.DatabaseExtractor`)
+- [x] Event streams: Kafka, bounded pull (`contextos.ingestion.kafka_stream.KafkaEventExtractor`)
+- [x] Chats/messages: Mattermost REST API (`contextos.ingestion.mattermost.MattermostExtractor`)
+- [x] Files/media: binary content via `ArtifactStore` (`contextos.ingestion.media.MediaExtractor`)
+- [x] Business apps: GitHub Issues (`contextos.ingestion.github_issues.GitHubIssuesExtractor`)
 
 ## Architecture decisions
 
