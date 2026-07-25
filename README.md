@@ -35,6 +35,15 @@ Sources → Ingestion → Context Graph → Context Orchestrator
                                       Agent Runtime
 ```
 
+![ContextOS architecture: ingestion connectors, the context graph and memory layer, context management, storage tiering, governance, storage and infrastructure, integrations, and observability](docs/architecture.png)
+
+A few notes on reading the diagram against the actual code:
+
+- **Relevance ranking** is scored on relevance, graph proximity, importance, confidence, and source authority (see `ContextOrchestrator._rank()`) — not recency, which instead drives `apply_tiering_policy()`.
+- **Access & isolation** means tenant isolation, enforced throughout; there is no fine-grained (ABAC/RBAC) access control yet (see "Known limitations").
+- The assembled **`ContextPackage`** carries ranked nodes, token count, and provenance node ids — it does not include relationship/edge data or a provenance manifest inline. Manifests are a separate, explicit call (`contextos.provenance.build_provenance_manifest()`).
+- **`RedisCachedContextStore`** (a TTL cache decorator) is already implemented, not merely planned — see "Extending ContextOS" and `examples/redis_cache.py`.
+
 ## Install
 
 ```bash
