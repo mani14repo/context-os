@@ -532,6 +532,36 @@ issues extractor. See `examples/ingest_documents.py`, `ingest_api.py`,
 `ingest_database.py`, `ingest_kafka.py`, `ingest_mattermost.py`, `ingest_media.py`,
 and `ingest_github_issues.py` for runnable demos of each.
 
+## ML model integration
+
+ContextOS doesn't train or run models -- it's a context/memory layer that sits next
+to whatever ML pipeline you already have. `examples/ml_spending_insights.py`
+(`pip install -e ".[ml]"`) shows the seam with a real XGBoost classifier: train it
+on transaction data, then turn each confident prediction into a governed
+`ContextNode` instead of a number that disappears after the request:
+
+```python
+probabilities = booster.predict(dtrain)
+contributions = booster.predict(dtrain, pred_contribs=True)  # built-in, no `shap` dependency
+
+node = await context_os.ingest(ContextNode(
+    tenant_id="demo",
+    node_type="spend_insight",
+    memory_type=MemoryType.EPISODIC,
+    classification=Classification.CONFIDENTIAL,
+    content=f"... discretionary spending (confidence {probability:.2f}), driven by {top_feature} ...",
+    importance=float(probability),
+))
+```
+
+From there it's ordinary ContextOS: `assemble()` retrieves the most relevant
+model-flagged insights for a task like "where can I cut monthly spending?", and
+`contextos.provenance.build_provenance_manifest()` gives the top recommendation a
+tamper-evident audit trail -- "why did the model flag this" is exactly the kind of
+decision that benefits from one. The example also prints a spending baseline
+computed directly from the full transaction set (not just the retrieved subset),
+so the model's picks read as a drill-down against a known total.
+
 ## Known limitations
 
 Known gaps, tracked as GitHub issues:
