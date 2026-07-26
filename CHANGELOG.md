@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `examples/ml_spending_insights.py` (`pip install -e ".[ml]"`): a domain example
+  showing ContextOS integrating with an existing ML model rather than adding a new
+  ContextOS capability. Trains a real XGBoost classifier on synthetic credit-card
+  transactions (essential vs. discretionary spend), captures each confident
+  prediction plus its per-feature contribution (XGBoost's built-in `pred_contribs`,
+  no separate `shap` dependency) as a `classification=CONFIDENTIAL` ContextNode, uses
+  `assemble()` to retrieve the most relevant discretionary-spend insights for a
+  savings task, and builds a provenance manifest on the top insight as an auditable
+  record of how the model-driven recommendation came to be.
+
 ### Fixed
 
 - `tests/test_github_issues_extractor.py` imported `httpx` before the module's

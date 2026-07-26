@@ -113,6 +113,13 @@ pip install -e ".[mattermost]"   # Mattermost chat messages
 pip install -e ".[s3]"           # or "[azure-blob]" -- binary files/media
 ```
 
+For the ML integration example (an existing XGBoost model's predictions, captured
+as governed context, not a new ContextOS capability):
+
+```bash
+pip install -e ".[ml]"
+```
+
 ## Five-minute example
 
 ```python
@@ -171,6 +178,7 @@ asyncio.run(main())
 | `examples/ingest_mattermost.py` | `MattermostExtractor` pulling real channel messages via the REST API, including bootstrapping a team/channel (needs `pip install -e ".[mattermost]"` and a running Mattermost server) |
 | `examples/ingest_media.py` | `MediaExtractor` storing a binary file via `ArtifactStore` and returning a `content_pointer`-only ContextNode, round-tripped through `load_artifact()` (needs `pip install -e ".[s3]"` and a running S3-compatible service) |
 | `examples/ingest_github_issues.py` | `GitHubIssuesExtractor` pulling real issues from `octocat/Hello-World` over the public GitHub API, filtering out pull requests (needs `pip install -e ".[http]"`) |
+| `examples/ml_spending_insights.py` | An existing XGBoost model's predictions and per-feature contributions (`pred_contribs`, no separate `shap` dependency) captured as governed ContextNodes, retrieved via `assemble()`, and covered by a provenance manifest (needs `pip install -e ".[ml]"`) |
 
 ## Core concepts
 
