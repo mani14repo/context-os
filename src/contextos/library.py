@@ -21,6 +21,8 @@ from contextos.protocols import (
     ContextStore,
     Extractor,
     GraphStore,
+    ModerationResult,
+    Moderator,
     Redactor,
     TierManager,
 )
@@ -43,6 +45,7 @@ class ContextOS:
         access_log: AccessLog | None = None,
         artifacts: ArtifactStore | None = None,
         redactor: Redactor | None = None,
+        moderator: Moderator | None = None,
     ) -> None:
         default_store = store or InMemoryContextStore()
         self.store: ContextStore = default_store
@@ -55,6 +58,10 @@ class ContextOS:
         # ArtifactStore, so this stays None unless you pass one explicitly.
         self.artifacts = artifacts
         self.redactor: Redactor = redactor or RegexRedactor()
+        # Unlike redactor, moderation has no dependency-free default -- there's no
+        # sensible built-in moderation heuristic the way RegexRedactor's PII patterns
+        # are, so this stays None unless configured explicitly (same as artifacts).
+        self.moderator: Moderator | None = moderator
         self.orchestrator = ContextOrchestrator(
             self.store, self.graph, self.compactor, self.access_log
         )
@@ -136,6 +143,19 @@ class ContextOS:
         on who's asking; callers apply it explicitly, e.g. before returning
         `classification=CONFIDENTIAL` content to an untrusted destination."""
         return await self.redactor.redact(content)
+
+    async def moderate(self, content: str) -> ModerationResult:
+        """Run the configured Moderator (content-safety screening -- e.g. an LLM
+        moderation API, or `contextos.moderation.KeywordModerator` for
+        fixed-vocabulary policy checks) against a piece of text. Unlike `redact()`,
+        this has no dependency-free default, so it raises RuntimeError if no
+        `moderator` was configured, matching `store_artifact()`/`load_artifact()`'s
+        pattern for artifacts. ContextOS never calls this automatically -- apply it
+        explicitly, e.g. before `ingest()` on untrusted input, or before returning
+        `assemble()` output to an end user."""
+        if self.moderator is None:
+            raise RuntimeError("No Moderator configured on this ContextOS instance")
+        return await self.moderator.moderate(content)
 
     async def assemble(self, request: ContextRequest) -> ContextPackage:
         return await self.orchestrator.assemble(request)

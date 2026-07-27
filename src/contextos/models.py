@@ -49,6 +49,12 @@ class ContextRepresentation(BaseModel):
     content: str | None = None
     content_pointer: str | None = None
     token_count: int | None = None
+    tokens_saved: int | None = Field(
+        default=None,
+        description="Tokens this representation omits relative to the node's "
+        "original content, if the Compactor computed one; 0 for levels that don't "
+        "actually compact (FULL/ORIGINAL).",
+    )
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -131,6 +137,11 @@ class ContextPackage(BaseModel):
     request: ContextRequest
     items: list[RankedContext]
     token_count: int
+    tokens_saved: int = Field(
+        default=0,
+        description="Sum of tokens_saved across the compacted representations "
+        "actually used in this package, vs. each item's original content.",
+    )
     missing_context: list[str] = Field(default_factory=list)
     provenance: list[UUID] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utcnow)

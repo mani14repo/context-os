@@ -63,7 +63,7 @@ class ContextOrchestrator:
             direct_ids = {node.id for node in direct}
             candidates = self._dedupe([*direct, *related])
             ranked = self._rank(candidates, request.task, direct_ids)
-            selected, token_count = await self._fit_budget(ranked, request.token_budget)
+            selected, token_count, tokens_saved = await self._fit_budget(ranked, request.token_budget)
             if self.access_log is not None:
                 for item in selected:
                     await self.access_log.record(
@@ -71,10 +71,12 @@ class ContextOrchestrator:
                     )
             span.set_attribute("contextos.item_count", len(selected))
             span.set_attribute("contextos.token_count", token_count)
+            span.set_attribute("contextos.tokens_saved", tokens_saved)
         return ContextPackage(
             request=request,
             items=selected,
             token_count=token_count,
+            tokens_saved=tokens_saved,
             missing_context=[] if selected else ["No relevant context found"],
             provenance=[item.node.id for item in selected],
         )
@@ -134,9 +136,10 @@ class ContextOrchestrator:
 
     async def _fit_budget(
         self, ranked: Sequence[RankedContext], token_budget: int
-    ) -> tuple[list[RankedContext], int]:
+    ) -> tuple[list[RankedContext], int, int]:
         selected: list[RankedContext] = []
         used = 0
+        saved = 0
         for item in ranked:
             representation = await self.compactor.compact(item.node, CompressionLevel.COMPACT)
             cost = representation.token_count or 0
@@ -149,4 +152,5 @@ class ContextOrchestrator:
             node.representations.append(representation)
             selected.append(item.model_copy(update={"node": node}))
             used += cost
-        return selected, used
+            saved += representation.tokens_saved or 0
+        return selected, used, saved

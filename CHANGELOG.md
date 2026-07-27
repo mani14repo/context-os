@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Moderator` protocol (`contextos.protocols`) + `ContextOS.moderate(content)`, and
+  `tokens_saved` tracking on `ContextRepresentation`/`ContextPackage` -- both
+  prompted by reviewing a companion notebook for a different context-engineering
+  book and assessing which of its patterns (moderation guardrails, token-usage
+  dashboards) were worth a real hook in ContextOS versus out of scope (its
+  ipywidgets Control Deck and agent-planning logic were judged out of scope --
+  ContextOS stays agent-neutral and doesn't orchestrate). `moderate()` has no
+  dependency-free default, unlike `redact()`: a meaningful content-safety check
+  needs a real classifier or moderation API, so it raises `RuntimeError` if
+  unconfigured, the same as `store_artifact()`/`load_artifact()` for artifacts.
+  `contextos.moderation.KeywordModerator` is a reference implementation for
+  fixed-vocabulary policy enforcement (e.g. an unannounced product codename), not
+  general toxicity detection. `tokens_saved` is computed by `SimpleCompactor` as
+  original-token-count minus the produced representation's token count (0 for
+  `FULL`/`ORIGINAL`, which don't truncate), and summed onto `ContextPackage` per
+  `assemble()` call. `examples/moderation.py` demonstrates both directions --
+  pre-flight screening before `ingest()`, and post-flight screening of each
+  *individually* retrieved item before returning it externally, since checking
+  only the aggregated output (as the reviewed notebook did) can let one flagged
+  item slip through unnoticed.
 - ACE-inspired adaptive context (Zhang et al., 2025, arxiv.org/abs/2510.04618):
   `ContextOS.record_feedback(tenant_id, node_id, helpful=...)` tracks per-node
   helpful/harmful counters in `metadata`, matching the paper's per-bullet counters

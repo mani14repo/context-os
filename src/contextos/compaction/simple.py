@@ -25,8 +25,11 @@ class SimpleCompactor:
             content = node.title or node.summary or ""
         else:
             content = " ".join(sentences[: limits[level]]) or source
+        token_count = max(1, len(content.split())) if content else 0
+        original_token_count = max(1, len(source.split())) if source else 0
         return ContextRepresentation(
             level=level,
             content=content,
-            token_count=max(1, len(content.split())) if content else 0,
+            token_count=token_count,
+            tokens_saved=max(0, original_token_count - token_count),
         )

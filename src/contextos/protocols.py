@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from pydantic import BaseModel, Field
+
 from contextos.models import (
     CompressionLevel,
     ContextEdge,
@@ -69,6 +71,15 @@ class FullContextStore(ContextStore, GraphStore, TierManager, AccessLog, Protoco
 
 class Redactor(Protocol):
     async def redact(self, content: str) -> str: ...
+
+
+class ModerationResult(BaseModel):
+    flagged: bool
+    categories: list[str] = Field(default_factory=list)
+
+
+class Moderator(Protocol):
+    async def moderate(self, content: str) -> ModerationResult: ...
 
 
 class ArtifactStore(Protocol):

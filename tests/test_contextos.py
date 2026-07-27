@@ -336,3 +336,58 @@ async def test_edges_for_returns_edges_touching_node_in_either_direction() -> No
     edges = await os.edges_for("t1", a.id)
     relationships = {edge.relationship for edge in edges}
     assert relationships == {"supports", "contradicts"}
+
+
+@pytest.mark.asyncio
+async def test_simple_compactor_reports_tokens_saved_for_a_truncated_level() -> None:
+    from contextos.compaction.simple import SimpleCompactor
+
+    node = ContextNode(
+        tenant_id="t1",
+        node_type="doc",
+        memory_type=MemoryType.SEMANTIC,
+        content="One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten.",
+    )
+    representation = await SimpleCompactor().compact(node, CompressionLevel.ONE_LINE)
+    assert representation.tokens_saved is not None
+    assert representation.tokens_saved > 0
+    assert representation.token_count is not None
+    assert representation.tokens_saved == 10 - representation.token_count
+
+
+@pytest.mark.asyncio
+async def test_simple_compactor_reports_zero_tokens_saved_for_full_level() -> None:
+    from contextos.compaction.simple import SimpleCompactor
+
+    node = ContextNode(
+        tenant_id="t1", node_type="doc", memory_type=MemoryType.SEMANTIC, content="One. Two. Three."
+    )
+    representation = await SimpleCompactor().compact(node, CompressionLevel.FULL)
+    assert representation.tokens_saved == 0
+
+
+@pytest.mark.asyncio
+async def test_assemble_reports_aggregate_tokens_saved() -> None:
+    os = ContextOS()
+    await os.ingest(
+        ContextNode(
+            tenant_id="t1",
+            node_type="doc",
+            memory_type=MemoryType.SEMANTIC,
+            title="Release notes",
+            content=(
+                "Release process overview. Step one is tagging. Step two is building. "
+                "Step three is publishing. Step four is announcing. Step five is archiving."
+            ),
+            importance=0.9,
+        )
+    )
+    package = await os.assemble(
+        ContextRequest(
+            tenant_id="t1", task="release process", agent="a", token_budget=6000
+        )
+    )
+    assert package.tokens_saved > 0  # COMPACT truncates 6 sentences down to 3
+    assert package.tokens_saved == sum(
+        (item.node.representations[-1].tokens_saved or 0) for item in package.items
+    )

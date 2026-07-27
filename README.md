@@ -180,6 +180,7 @@ asyncio.run(main())
 | `examples/ingest_github_issues.py` | `GitHubIssuesExtractor` pulling real issues from `octocat/Hello-World` over the public GitHub API, filtering out pull requests (needs `pip install -e ".[http]"`) |
 | `examples/ml_spending_insights.py` | An existing XGBoost model's predictions and per-feature contributions (`pred_contribs`, no separate `shap` dependency) captured as governed ContextNodes, retrieved via `assemble()`, and covered by a provenance manifest (needs `pip install -e ".[ml]"`) |
 | `examples/ace_curation.py` | An ACE-style Curator loop: repeated/reworded insights get merged and reinforced via `curate()` instead of piling up as duplicate ContextNodes |
+| `examples/moderation.py` | `KeywordModerator` screening content before `ingest()` (pre-flight) and screening each retrieved item individually before returning it externally (post-flight), plus `assemble()`'s `tokens_saved` metric |
 
 ## Core concepts
 
@@ -223,6 +224,7 @@ src/contextos/
 ├── workflows.py              # supersede() / contradictions_for()
 ├── provenance.py             # Hash-chained provenance manifests
 ├── curation.py                # record_feedback() + find_similar()/curate() (ACE-style)
+├── moderation.py              # KeywordModerator reference impl (no auto-wired default)
 ├── ingestion/documents.py    # PDF/DOCX/text/markdown -> ContextNodes
 ├── ingestion/api.py          # Generic JSON/REST -> ContextNodes
 ├── ingestion/database.py     # SQL query rows -> ContextNodes
@@ -252,6 +254,7 @@ os = ContextOS(
     tier_manager=MyTierManager(), # implements contextos.protocols.TierManager, defaults to `store`
     access_log=MyAccessLog(),     # implements contextos.protocols.AccessLog, defaults to `store`
     redactor=MyRedactor(),        # implements contextos.protocols.Redactor, defaults to RegexRedactor
+    moderator=MyModerator(),      # implements contextos.protocols.Moderator, no default (like artifacts)
 )
 ```
 
@@ -596,6 +599,40 @@ result = await curate(context_os, "agent-playbook", candidate_node, merge_thresh
 See `examples/ace_curation.py` for a runnable Curator loop where repeated/reworded
 insights get merged and reinforced instead of piling up as duplicate nodes.
 
+## Content moderation and token-savings metrics
+
+Two smaller additions, both prompted by comparing ContextOS against a companion
+notebook for *Context Engineering for Multi-Agent Systems*: a pre-flight/post-flight
+moderation pattern worth having a real hook for, and a token-savings metric the
+notebook's own dashboard surfaced that ContextOS's compaction ladder could compute
+for free.
+
+**`ContextOS.moderate(content)`** runs the configured `Moderator`
+(`contextos.protocols.Moderator`) against a piece of text and returns a
+`ModerationResult` (`flagged: bool`, `categories: list[str]`). Unlike `redact()`,
+there's no dependency-free default -- a meaningful content-safety check needs a
+real classifier or moderation API, not a regex -- so `moderate()` raises
+`RuntimeError` if no `moderator` was configured, the same as `store_artifact()`/
+`load_artifact()` for artifacts. `contextos.moderation.KeywordModerator` is a
+reference implementation for fixed-vocabulary *policy* enforcement (flagging a
+mention of an unannounced product codename, not general toxicity detection, which
+needs a real model): `ContextOS(moderator=KeywordModerator(["Project Phoenix"]))`.
+Nothing in ContextOS calls `moderate()` automatically -- apply it explicitly, e.g.
+before `ingest()` on untrusted input, or on each individually retrieved item
+before returning `assemble()` output to an external-facing channel (checking only
+the aggregated output, not each item, is an easy way to let one flagged item slip
+through unnoticed).
+
+**`tokens_saved`** is now tracked on `ContextRepresentation` (per compacted
+representation) and summed onto `ContextPackage` (per `assemble()` call).
+`SimpleCompactor` computes it as the difference between the node's original token
+count and the representation actually produced -- 0 for `FULL`/`ORIGINAL` levels,
+which don't truncate anything. A custom `Compactor` can leave it `None` if it
+doesn't want to compute one; the field is optional.
+
+See `examples/moderation.py` for both moderation directions plus `tokens_saved`
+in a single runnable example.
+
 ## Known limitations
 
 Known gaps, tracked as GitHub issues:
@@ -644,6 +681,12 @@ Known gaps, tracked as GitHub issues:
 - `RegexRedactor`'s phone-number pattern is US-centric and, because it's anchored on
   `\b`, leaves a leading `(` behind for parenthesized area codes (`(555) 123-4567` ->
   `([REDACTED:PHONE]`); it's a reasonable default, not a general-purpose PII scrubber.
+- `KeywordModerator` is exact case-insensitive substring matching -- no fuzzy
+  matching, stemming, or semantic understanding, so a misspelling or a rephrasing
+  of a blocked term won't be caught. It's suited to fixed-vocabulary policy checks
+  (a known codename, a known banned reference), not general content-safety
+  classification; plug in a real moderation API via the same `Moderator` protocol
+  for that.
 - `apply_tiering_policy()` and `apply_retention_policy()` each process at most 200
   nodes per tenant per call (the `ContextQuery.max_results` ceiling); there's no
   pagination for larger tenants yet.
@@ -734,6 +777,13 @@ Known gaps, tracked as GitHub issues:
 - [x] Per-node helpful/harmful feedback counters (`ContextOS.record_feedback()`)
 - [x] Grow-and-refine de-duplication via embedding similarity (`contextos.curation.find_similar()`)
 - [x] Curator-style merge-or-ingest (`contextos.curation.curate()`; see `examples/ace_curation.py`)
+
+### 0.7 — Moderation and token metrics
+
+- [x] `Moderator` protocol + `ContextOS.moderate()` (no default; `contextos.moderation.KeywordModerator`
+      as a fixed-vocabulary policy-enforcement reference implementation)
+- [x] `tokens_saved` on `ContextRepresentation` (per compaction) and `ContextPackage`
+      (aggregate per `assemble()` call); see `examples/moderation.py`
 
 ## Architecture decisions
 
