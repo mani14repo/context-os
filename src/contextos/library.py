@@ -89,6 +89,27 @@ class ContextOS:
         contextos.workflows to find `contradicts`/`supersedes` relationships."""
         return list(await self.graph.edges_for_node(tenant_id, node_id))
 
+    async def record_feedback(self, tenant_id: str, node_id: UUID, *, helpful: bool) -> ContextNode:
+        """Record that a node was judged helpful or harmful after being used --
+        e.g. by an agent's reflection step, following the ACE paper's (Zhang et al.,
+        2025, arxiv.org/abs/2510.04618) pattern of tracking per-bullet helpful/harmful
+        counters. Increments `metadata["feedback_helpful_count"]` or
+        `metadata["feedback_harmful_count"]` and re-ingests the node.
+
+        Like any other update, this goes through `put_node()`, so it creates a new
+        version -- the same immutable-history tradeoff `compact()` and `move()`
+        already have, not a special case here. A node that receives frequent
+        feedback will accumulate frequent versions; if that churn matters for your
+        use case, batch feedback calls rather than recording each one individually.
+        Raises `KeyError` if the node doesn't exist for this tenant.
+        """
+        node = await self.store.get_node(tenant_id, node_id)
+        if node is None:
+            raise KeyError(node_id)
+        key = "feedback_helpful_count" if helpful else "feedback_harmful_count"
+        node.metadata[key] = int(node.metadata.get(key, 0)) + 1
+        return await self.ingest(node)
+
     async def ingest_source(self, extractor: Extractor, tenant_id: str) -> list[ContextNode]:
         """Run an Extractor against its configured source and ingest() every
         ContextNode it produces. This is the ingestion-pipeline entry point: a

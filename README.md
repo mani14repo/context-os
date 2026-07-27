@@ -179,6 +179,7 @@ asyncio.run(main())
 | `examples/ingest_media.py` | `MediaExtractor` storing a binary file via `ArtifactStore` and returning a `content_pointer`-only ContextNode, round-tripped through `load_artifact()` (needs `pip install -e ".[s3]"` and a running S3-compatible service) |
 | `examples/ingest_github_issues.py` | `GitHubIssuesExtractor` pulling real issues from `octocat/Hello-World` over the public GitHub API, filtering out pull requests (needs `pip install -e ".[http]"`) |
 | `examples/ml_spending_insights.py` | An existing XGBoost model's predictions and per-feature contributions (`pred_contribs`, no separate `shap` dependency) captured as governed ContextNodes, retrieved via `assemble()`, and covered by a provenance manifest (needs `pip install -e ".[ml]"`) |
+| `examples/ace_curation.py` | An ACE-style Curator loop: repeated/reworded insights get merged and reinforced via `curate()` instead of piling up as duplicate ContextNodes |
 
 ## Core concepts
 
@@ -221,6 +222,7 @@ src/contextos/
 ├── retention.py              # Retention-eligibility decision function
 ├── workflows.py              # supersede() / contradictions_for()
 ├── provenance.py             # Hash-chained provenance manifests
+├── curation.py                # record_feedback() + find_similar()/curate() (ACE-style)
 ├── ingestion/documents.py    # PDF/DOCX/text/markdown -> ContextNodes
 ├── ingestion/api.py          # Generic JSON/REST -> ContextNodes
 ├── ingestion/database.py     # SQL query rows -> ContextNodes
@@ -562,6 +564,38 @@ decision that benefits from one. The example also prints a spending baseline
 computed directly from the full transaction set (not just the retrieved subset),
 so the model's picks read as a drill-down against a known total.
 
+## ACE-style feedback and curation
+
+`contextos.curation` and `ContextOS.record_feedback()` implement two ideas from the
+ACE paper (Zhang et al., 2025, [arxiv.org/abs/2510.04618](https://arxiv.org/abs/2510.04618)),
+which frames context adaptation as maintaining an evolving "playbook" via a
+Generator/Reflector/Curator split rather than repeatedly rewriting a prompt:
+
+- **`ContextOS.record_feedback(tenant_id, node_id, helpful=...)`** tracks per-node
+  helpful/harmful counters in `metadata`, matching ACE's per-bullet counters. Like
+  any other update it goes through `put_node()`, so it creates a new version each
+  call -- the same immutable-history tradeoff `compact()`/`move()` already have,
+  not a special case; batch feedback calls if that version churn matters for your
+  use case.
+- **`contextos.curation.find_similar()`** and **`curate()`** implement ACE's
+  "grow-and-refine" de-duplication: given a candidate insight, `find_similar()`
+  computes cosine similarity via an `EmbeddingProvider` against a tenant's existing
+  nodes (working against any store, including `InMemoryContextStore`, since it
+  does the similarity computation itself rather than relying on
+  `PostgresContextStore`-specific vector search), and `curate()` composes that
+  with `record_feedback()`: merge into a near-duplicate (reinforcing it) or ingest
+  as new.
+
+```python
+from contextos.curation import curate
+
+result = await curate(context_os, "agent-playbook", candidate_node, merge_threshold=0.85)
+# result is either the reinforced existing node, or the newly ingested candidate
+```
+
+See `examples/ace_curation.py` for a runnable Curator loop where repeated/reworded
+insights get merged and reinforced instead of piling up as duplicate nodes.
+
 ## Known limitations
 
 Known gaps, tracked as GitHub issues:
@@ -595,6 +629,13 @@ Known gaps, tracked as GitHub issues:
   embeddings. `PostgresContextStore` ranks by real pgvector cosine distance, but its
   default `HashingEmbeddingProvider` captures shared vocabulary, not meaning — plug in
   a real embedding model via the same protocol for genuine semantic search.
+- `contextos.curation.find_similar()` narrows candidates via `ContextOS.search()`
+  (a lexical prefilter, unless the underlying store does real vector search) before
+  computing cosine similarity on the survivors -- a genuinely similar node with
+  near-zero lexical overlap with the query text could be filtered out before
+  similarity scoring ever sees it. Works reliably for near-identical rewordings
+  (the common case for an ACE-style Reflector re-deriving a known lesson); not a
+  substitute for a real vector index over the full candidate set.
 - No authorization layer: `classification` is a label and `redact()` is opt-in --
   nothing in ContextOS stops a caller from reading a `restricted` node's original
   content or skipping `redact()` before forwarding it. There is still no ABAC/RBAC
@@ -687,6 +728,12 @@ Known gaps, tracked as GitHub issues:
 - [x] Chats/messages: Mattermost REST API (`contextos.ingestion.mattermost.MattermostExtractor`)
 - [x] Files/media: binary content via `ArtifactStore` (`contextos.ingestion.media.MediaExtractor`)
 - [x] Business apps: GitHub Issues (`contextos.ingestion.github_issues.GitHubIssuesExtractor`)
+
+### 0.6 — Adaptive context (ACE-inspired)
+
+- [x] Per-node helpful/harmful feedback counters (`ContextOS.record_feedback()`)
+- [x] Grow-and-refine de-duplication via embedding similarity (`contextos.curation.find_similar()`)
+- [x] Curator-style merge-or-ingest (`contextos.curation.curate()`; see `examples/ace_curation.py`)
 
 ## Architecture decisions
 

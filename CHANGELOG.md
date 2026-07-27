@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- ACE-inspired adaptive context (Zhang et al., 2025, arxiv.org/abs/2510.04618):
+  `ContextOS.record_feedback(tenant_id, node_id, helpful=...)` tracks per-node
+  helpful/harmful counters in `metadata`, matching the paper's per-bullet counters
+  (like any update, this goes through `put_node()` and creates a new version --
+  the existing immutable-history tradeoff, not a special case). New
+  `contextos.curation` module: `find_similar()` implements "grow-and-refine"
+  de-duplication by computing cosine similarity via an `EmbeddingProvider` against
+  search candidates (working against any store, not just `PostgresContextStore`,
+  since the similarity computation doesn't depend on store-specific vector search
+  internals), and `curate()` composes `find_similar()` + `record_feedback()` into
+  ACE's Curator role: merge a candidate insight into a near-duplicate or ingest it
+  as new. Tested with real cosine-similarity values computed against
+  `HashingEmbeddingProvider`, not asserted blindly -- verified the default
+  lexical-hash embedder catches near-identical rewordings but not loose paraphrases,
+  and documented that as a real limitation of `find_similar()` rather than papering
+  over it. `examples/ace_curation.py` runs a Curator loop where repeated/reworded
+  insights get merged and reinforced instead of piling up as duplicate nodes.
 - `examples/ml_spending_insights.py` (`pip install -e ".[ml]"`): a domain example
   showing ContextOS integrating with an existing ML model rather than adding a new
   ContextOS capability. Trains a real XGBoost classifier on synthetic credit-card

@@ -59,10 +59,17 @@ line-length = 100
 target-version = "py311"
 
 [tool.mypy]
-python_version = "3.11"
+# Matches the Python version CI actually runs under (see ci.yml), not the
+# package's minimum supported version (requires-python = ">=3.11" above) --
+# numpy's own stub files use Python 3.12+ syntax (PEP 695 `type` statements), and
+# pgvector imports numpy conditionally when present (surfaces when postgres and ml
+# extras are installed together), which a 3.11 target can't parse at all: it's a
+# hard syntax error, not a suppressible per-module type error. ContextOS's own
+# source has no 3.12-only syntax, so this doesn't loosen what's actually checked.
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["asyncpg.*", "pgvector.*", "aioboto3.*", "botocore.*", "aiokafka.*"]
+module = ["asyncpg.*", "pgvector.*", "aioboto3.*", "botocore.*", "aiokafka.*", "xgboost.*"]
 ignore_missing_imports = true
